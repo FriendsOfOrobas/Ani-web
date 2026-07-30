@@ -1,0 +1,262 @@
+/* Mobile-first. Telefon jest pilotem, wiec cele dotykowe >= 44px. */
+
+:root {
+  --bg: #14161a;
+  --card: #1d2026;
+  --line: #2c313a;
+  --text: #e8eaed;
+  --muted: #9aa2ae;
+  --accent: #5b8cff;
+  --ok: #3fbf7f;
+  --warn: #e0b341;
+  --err: #e2554f;
+  --radius: 12px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --line: #dcdfe4;
+    --text: #1a1c20;
+    --muted: #5f6672;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0 1rem 2rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 0;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 1;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  letter-spacing: 0.02em;
+}
+
+main {
+  max-width: 32rem;
+  margin: 0 auto;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.card h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+label {
+  display: block;
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+label:not(:first-child) {
+  margin-top: 1rem;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 0.75rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 1rem;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.row .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.row .field label {
+  margin-top: 1rem;
+}
+
+button {
+  min-height: 48px;
+  padding: 0 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  width: 100%;
+  margin-top: 1.25rem;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.ghost {
+  min-height: 40px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.controls {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.controls button {
+  flex: 1;
+}
+
+/* --- status --- */
+
+.status-card {
+  padding-bottom: 0.5rem;
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.dot[data-state="playing"] {
+  background: var(--ok);
+}
+
+.dot[data-state="paused"] {
+  background: var(--warn);
+}
+
+.dot[data-state="offline"],
+.dot[data-state="unknown"] {
+  background: var(--err);
+}
+
+.meta {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.meta > div {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.meta dt {
+  color: var(--muted);
+  flex: none;
+  min-width: 7rem;
+}
+
+.meta dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* --- reszta --- */
+
+.error {
+  max-width: 32rem;
+  margin: 0 auto 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--err);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--err) 15%, transparent);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.hint {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.caps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.9rem;
+}
+
+.caps li {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.caps li span:last-child {
+  color: var(--muted);
+}
+
+.caps li[data-on="true"] span:last-child {
+  color: var(--ok);
+}

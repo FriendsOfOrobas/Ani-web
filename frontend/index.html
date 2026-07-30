@@ -3,52 +3,97 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Ani-Web test</title>
-    <style>
-      body { font-family: Arial, sans-serif; margin: 2rem; }
-      button { padding: 0.6rem 1rem; margin: 0.5rem 0; }
-      .card { border: 1px solid #ddd; padding: 1rem; max-width: 480px; }
-    </style>
+    <meta name="color-scheme" content="dark light" />
+    <title>Ani-Web</title>
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="card">
-      <h1>Ani-Web testowa wersja</h1>
-      <p id="status">Ładowanie...</p>
-      <label for="source">Źródło:</label>
-      <input id="source" value="demo.mp4" />
-      <br />
-      <button id="play">Start ani-cli / VLC</button>
-      <button id="stop">Stop</button>
-    </div>
+    <!--
+      Kiosk, mobile-first: telefon jest pilotem. Swiadomie NIE ma tu suwaka
+      postepu ani seeka — patrz docs.md D2. Kontrolki nieobslugiwane przez
+      aktywny backend chowa app.js na podstawie capabilities z /api/status.
+    -->
+    <header class="topbar">
+      <h1>Ani-Web</h1>
+      <button id="nav-toggle" class="ghost" type="button" aria-label="Ustawienia">
+        Ustawienia
+      </button>
+    </header>
 
-    <script>
-      const statusEl = document.getElementById("status");
-      const playBtn = document.getElementById("play");
-      const stopBtn = document.getElementById("stop");
-      const sourceInput = document.getElementById("source");
+    <p id="error" class="error" role="alert" hidden></p>
 
-      async function refreshStatus() {
-        const response = await fetch("/api/status");
-        const data = await response.json();
-        const pidText = data.pid ? ` | PID: ${data.pid}` : "";
-        statusEl.textContent = `Status: ${data.status} | Odtwarzacz: ${data.player}${pidText}`;
-      }
+    <main>
+      <section id="screen-play" class="screen">
+        <div class="card">
+          <label for="query">Anime</label>
+          <input id="query" type="text" placeholder="np. one piece" autocomplete="off" />
 
-      playBtn.addEventListener("click", async () => {
-        await fetch("/api/play", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ source: sourceInput.value })
-        });
-        refreshStatus();
-      });
+          <div class="row">
+            <div class="field">
+              <label for="episode">Odcinek</label>
+              <input id="episode" type="number" min="1" step="1" value="1" inputmode="numeric" />
+            </div>
+            <div class="field">
+              <label for="quality">Jakość</label>
+              <select id="quality">
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="480">480p</option>
+                <option value="360">360p</option>
+              </select>
+            </div>
+          </div>
 
-      stopBtn.addEventListener("click", async () => {
-        await fetch("/api/stop", { method: "POST" });
-        refreshStatus();
-      });
+          <button id="play" class="primary" type="button">Odtwórz</button>
 
-      refreshStatus();
-    </script>
+          <div class="controls">
+            <button id="pause" type="button" hidden>Pauza</button>
+            <button id="stop" type="button">Stop</button>
+          </div>
+        </div>
+
+        <div class="card status-card">
+          <div class="status-line">
+            <span id="state-dot" class="dot" aria-hidden="true"></span>
+            <strong id="state">łączenie…</strong>
+          </div>
+          <dl class="meta">
+            <div><dt>Odtwarzacz</dt><dd id="player">—</dd></div>
+            <div id="now-playing-row" hidden><dt>Teraz</dt><dd id="now-playing">—</dd></div>
+            <div id="position-row" hidden><dt>Pozycja</dt><dd id="position">—</dd></div>
+            <div id="source-row" hidden><dt>Źródło</dt><dd id="source">—</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section id="screen-settings" class="screen" hidden>
+        <div class="card">
+          <label for="set-quality">Domyślna jakość</label>
+          <select id="set-quality">
+            <option value="1080">1080p</option>
+            <option value="720">720p</option>
+            <option value="480">480p</option>
+            <option value="360">360p</option>
+          </select>
+
+          <label for="set-episode-step">Domyślny odcinek startowy</label>
+          <input id="set-episode-step" type="number" min="1" step="1" value="1" inputmode="numeric" />
+
+          <button id="settings-save" class="primary" type="button">Zapisz</button>
+          <p id="settings-hint" class="hint"></p>
+        </div>
+
+        <div class="card">
+          <h2>Możliwości backendu</h2>
+          <p class="hint">
+            Czego nie ma na liście, tego ten odtwarzacz nie potrafi — kontrolki są
+            wtedy ukryte.
+          </p>
+          <ul id="capabilities" class="caps"></ul>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
   </body>
 </html>

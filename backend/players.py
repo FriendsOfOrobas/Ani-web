@@ -6,10 +6,14 @@ chowa kontrolki, ktorych dana implementacja nie obsluguje. Bez tego zbudujemy
 UI pod mozliwosci, ktorych na Android TV po prostu nie ma.
 """
 
+import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
+import tempfile
+import time
 from dataclasses import asdict, dataclass
 
 
@@ -147,24 +151,169 @@ class MpvIpcPlayer(PlayerBackend):
     NIE nadaje sie na Android TV: mpv w Termuksie ma tylko wyjscia null/image,
     a wariant x11 nie ma akceleracji sprzetowej (docs.md §2).
 
-    Stage 0 — do implementacji.
+    Nagloweki (Referer, UA) idza przez --http-header-fields-append, wiec na
+    Linuksie proxy z docs.md §7 nie jest do niczego potrzebne.
     """
 
     name = "mpv-ipc"
     capabilities = Capabilities(pause=True, stop=True, seek=True, position=True, ended_events=True)
 
+    # Ile czekamy, az mpv wystawi socket IPC po starcie procesu.
+    SOCKET_WAIT_SECONDS = 5.0
+    IPC_TIMEOUT_SECONDS = 2.0
+
     def __init__(self, mpv_command="mpv", ipc_socket=""):
         self.mpv_command = mpv_command
-        self.ipc_socket = ipc_socket
+        self.ipc_socket = ipc_socket or os.path.join(
+            tempfile.gettempdir(), f"ani-web-mpv-{os.getpid()}.sock"
+        )
+        self.process = None
+
+    @property
+    def is_running(self):
+        return self.process is not None and self.process.poll() is None
+
+    # --- IPC --------------------------------------------------------------
+
+    def _request(self, *command):
+        """Jedno zapytanie JSON IPC. Nowe polaczenie na komende — mpv na to pozwala.
+
+        mpv wtraca w ten sam strumien asynchroniczne zdarzenia, wiec czytamy
+        linie tak dlugo, az trafimy na odpowiedz (ta z kluczem "error").
+        """
+        payload = (json.dumps({"command": list(command)}) + "\n").encode("utf-8")
+
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self.IPC_TIMEOUT_SECONDS)
+            sock.connect(self.ipc_socket)
+            sock.sendall(payload)
+
+            buffer = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise PlayerError("mpv zamknal socket IPC")
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, _, buffer = buffer.partition(b"\n")
+                    if not line.strip():
+                        continue
+                    try:
+                        message = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if "error" in message:
+                        return message
+
+    def _command(self, *command):
+        try:
+            message = self._request(*command)
+        except (OSError, socket.timeout) as exc:
+            raise PlayerError(f"mpv nie odpowiada po IPC: {exc}") from exc
+        if message.get("error") != "success":
+            raise PlayerError(f"mpv odrzucil komende {command[0]}: {message.get('error')}")
+        return message.get("data")
+
+    def _get(self, prop):
+        """Odczyt wlasciwosci best-effort — status nie moze wywalac zapytania."""
+        try:
+            return self._command("get_property", prop)
+        except PlayerError:
+            return None
+
+    # --- cykl zycia -------------------------------------------------------
+
+    def _wait_for_socket(self):
+        deadline = time.monotonic() + self.SOCKET_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            if not self.is_running:
+                code = self.process.returncode if self.process else "?"
+                raise PlayerError(f"mpv zakonczyl sie od razu (kod {code})")
+            if os.path.exists(self.ipc_socket):
+                return
+            time.sleep(0.05)
+        raise PlayerError(f"mpv nie wystawil socketu IPC w {self.SOCKET_WAIT_SECONDS:.0f}s")
+
+    def _build_args(self, stream_url, headers, position, title):
+        args = [
+            self.mpv_command,
+            f"--input-ipc-server={self.ipc_socket}",
+            "--force-window=yes",
+            "--keep-open=no",
+        ]
+        if position:
+            args.append(f"--start={int(position)}")
+        if title:
+            args.append(f"--force-media-title={title}")
+        for key, value in (headers or {}).items():
+            # -append, a nie lista po przecinkach: wartosci naglowkow moga
+            # zawierac przecinki i rozjechalyby parsowanie.
+            args.append(f"--http-header-fields-append={key}: {value}")
+        args.append(stream_url)
+        return args
 
     def play(self, stream_url, headers=None, position=0, title=""):
-        raise NotImplementedError("MpvIpcPlayer: Stage 0 (docs.md §12)")
+        # Restart zamiast loadfile: deterministyczny, a pozycja startowa
+        # przechodzi wtedy przez --start, bez wyscigu z ladowaniem pliku.
+        if self.is_running:
+            self.stop()
+
+        if os.path.exists(self.ipc_socket):
+            os.unlink(self.ipc_socket)
+
+        try:
+            self.process = subprocess.Popen(
+                self._build_args(stream_url, headers, position, title),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError as exc:
+            raise PlayerError(f"Nie znaleziono {self.mpv_command} — zainstaluj mpv") from exc
+
+        self._wait_for_socket()
+        return self.status()
+
+    def pause(self):
+        if not self.is_running:
+            raise PlayerError("mpv nie jest uruchomiony")
+        self._command("cycle", "pause")
+        return self.status()
 
     def stop(self):
-        raise NotImplementedError("MpvIpcPlayer: Stage 0 (docs.md §12)")
+        if self.is_running:
+            try:
+                self._command("quit")
+            except PlayerError:
+                # Socket moze byc juz martwy — wtedy zostaje sygnal.
+                self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+
+        self.process = None
+        if os.path.exists(self.ipc_socket):
+            try:
+                os.unlink(self.ipc_socket)
+            except OSError:
+                pass
+        return {"state": "stopped"}
 
     def status(self):
-        return {"state": "idle"}
+        if self.process is None:
+            return {"state": "idle"}
+        if not self.is_running:
+            return {"state": "ended", "exit_code": self.process.returncode}
+
+        payload = {"state": "paused" if self._get("pause") else "playing"}
+        position = self._get("time-pos")
+        if position is not None:
+            payload["position"] = round(position)
+        duration = self._get("duration")
+        if duration:
+            payload["duration"] = round(duration)
+        return payload
 
 
 class AndroidIntentPlayer(PlayerBackend):

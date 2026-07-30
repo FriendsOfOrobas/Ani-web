@@ -10,6 +10,7 @@ sie regularnie (domeny allanime, Cloudflare, od v4.15 zaleznosc od Botana),
 wiec podmiana na anipy-cli albo inne zrodlo ma kosztowac jeden adapter.
 """
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -90,7 +91,16 @@ def build_resolve_command(query, episode, quality="1080", select=1, ani_cli_comm
 
 
 def resolve_env(base_env=None):
-    env = dict(base_env or {})
+    """Srodowisko dla podprocesu ani-cli.
+
+    Dziedziczymy os.environ, gdy nie podano nic jawnie. Zbudowanie env od zera
+    wyglada czysciej, ale jest bledne: ani-cli to skrypt POSIX-owy wolajacy
+    curl/sed/grep i czytajacy HOME, a bez PATH nawet samo ani-cli nie zostanie
+    znalezione (Python schodzi wtedy do os.defpath = "/bin:/usr/bin"). Na
+    Termuksie, gdzie cale userland siedzi w /data/data/com.termux/files/usr/bin,
+    oznacza to brak absolutnie wszystkiego.
+    """
+    env = dict(os.environ if base_env is None else base_env)
     env["ANI_CLI_PLAYER"] = "debug"
     return env
 

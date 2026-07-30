@@ -7,24 +7,32 @@ Ten plik istnieje po to, zeby przeniesc kontekst tej sesji do czatu w VS Code.
 
 ---
 
-## 0. WAZNE — czego tu NIE MA
+## 0. Stan prac
 
-Praca zostala **przerwana w polowie**. Zrobione jest:
+> **Aktualizacja 2026-07-30, sesja lokalna (VS Code):** punkty przerwane w sesji
+> web zostaly dokonczone. Ta sekcja opisuje stan po tym domknieciu; sekcje 1-9
+> to niezmieniony zapis ustalen z sesji web.
 
 - [x] Opcja 4 — przepisanie `docs.md` pod research
 - [x] Opcja 3, czesc backendowa — moduly `config`/`players`/`ani_runner`/`state`
-- [ ] **Opcja 3, `backend/server.py` jako aplikacja Flask + endpoint SSE** — NIE zrobione
-- [ ] **Opcja 3, rozbicie frontendu** na `index.html` + `styles.css` + `app.js` — NIE zrobione
-- [ ] **Testy nowych modulow** — NIE zrobione
+- [x] Opcja 3, `backend/server.py` jako aplikacja Flask + endpoint SSE
+- [x] Opcja 3, rozbicie frontendu na `index.html` + `styles.css` + `app.js`
+- [x] Testy nowych modulow — **119 testow, wszystkie przechodza**
 
-Konsekwencja, o ktorej trzeba wiedziec: **`backend/server.py` jest nadal STARY**
-(stdlib `http.server`) i zawiera **wlasna, przestarzala klase `AppState`**, ktora
-duplikuje i kloci sie z nowa z `backend/state.py`. Stary `server.py` nie importuje
-jeszcze nowych modulow. To stan przejsciowy — do posprzatania w nastepnym kroku.
+Stara klasa `AppState` (stdlib `http.server`) zostala **usunieta** ze
+`server.py`; jedyny stan aplikacji mieszka w `state.AppState`.
+`tests/test_server.py` jest przepisany pod Flaska (test client).
 
-Testy (`tests/test_server.py`) nadal testuja STARA klase `AppState` ze
-`server.py` i przechodza (3/3). Po przepisaniu `server.py` bedzie je trzeba
-przepisac razem z nim.
+Ponad zakres z §10 doszly dwie rzeczy:
+
+- **`MpvIpcPlayer` jest zaimplementowany** (byl szkieletem z `NotImplementedError`),
+  wiec wariant linuksowy realnie dziala: `--player mpv-ipc`. Protokol IPC jest
+  pokryty testami przeciwko atrapie socketu, ale **nie byl jeszcze uruchomiony
+  przeciwko prawdziwemu mpv** — brak mpv na maszynie developerskiej.
+- **Naprawiony blad w `ani_runner.resolve_env()`** — patrz §11 nizej.
+
+Nadal szkieletem (swiadomie, Stage 0/2 — czeka na odpowiedzi z D6):
+`AndroidIntentPlayer` i `AniCliSource.search()`.
 
 ## 1. Co bylo powodem zmian
 
@@ -183,16 +191,42 @@ cd backend && python3 -c "import config, players, ani_runner, state; print('ok')
 
 ## 10. Nastepny krok
 
-Dokonczyc opcje 3, w tej kolejnosci:
+Opcja 3 jest **zamknieta** (patrz §0). Zostaje Stage 0 z `docs.md` §12.
 
-1. `backend/server.py` → aplikacja Flask (factory), routing z `docs.md` §6,
-   endpoint `GET /api/events` (SSE) karmiony z `AppState.subscribe()`.
-   **Usunac stara klase `AppState` ze `server.py`** — zostaje ta ze `state.py`.
-2. Frontend → `index.html` + `styles.css` + `app.js`; `app.js` czyta
-   `capabilities` z `/api/status` i chowa nieobslugiwane kontrolki;
-   `EventSource` na `/api/events`.
-3. Testy → `test_config.py`, `test_players.py`, `test_ani_runner.py`
-   (budowanie komendy + parsowanie wyjscia debug + logika Referera),
-   przepisac `test_server.py` pod nowa strukture.
+Kolejnosc, ktora ma najwiecej sensu:
 
-Potem Stage 0 z `docs.md` §12: pipeline end-to-end.
+1. **Uruchomic `--player mpv-ipc` przeciwko prawdziwemu mpv** na Linuksie.
+   To jedyna czesc `MpvIpcPlayer` niesprawdzona na zywym programie: atrapa
+   socketu pokrywa protokol, ale nie zachowanie samego mpv (czas pojawienia sie
+   socketu, `--start`, `--http-header-fields-append`).
+2. **Reverse-proxy Referera** z `docs.md` §7 — bez tego strumienie allanime nie
+   pojda w odtwarzaczu, ktory nie przyjmuje naglowkow. Na Linuksie mpv bierze je
+   przez `--http-header-fields-append`, wiec proxy jest potrzebne dopiero pod
+   Androida; da sie je jednak napisac i przetestowac teraz.
+3. **Odpowiedziec na D6** (`docs.md` §11) — bez tego `AndroidIntentPlayer`
+   pozostaje szkieletem. Blokujace: jaki box i wersja Androida, czy zrootowany,
+   czy uruchomi Kodi.
+
+Uwaga do zapamietania: **slownik stanow nie jest jednolity miedzy backendami.**
+Po `stop()` `SimulatedPlayer` raportuje `stopped`, a `AniCliPlayer` `idle`
+(bo czysci proces i wraca do stanu wyjsciowego). Frontend mapuje jedno i drugie
+na „nie odtwarza", wiec to na razie kosmetyka — ale przy Stage 2 warto ustalic
+jeden slownik.
+
+## 11. Blad naprawiony w sesji lokalnej — `resolve_env()`
+
+`resolve_env(None)` budowalo srodowisko podprocesu **od zera**, wiec ani-cli
+dostawalo `{"ANI_CLI_PLAYER": "debug"}` i nic wiecej — bez `PATH`, bez `HOME`.
+
+Objaw byl mylacy: `check()` uzywa `shutil.which()` i przechodzil (bo widzi
+`PATH` procesu rodzica), a `resolve()` konczylo sie bledem
+„Nie znaleziono ani-cli — zainstaluj ani-cli" **mimo ze ani-cli byl na PATH**.
+Python bez `PATH` w `env` schodzi do `os.defpath` = `/bin:/usr/bin`.
+
+Na Linuksie czesc rzeczy dzialala przypadkiem, bo `/bin/sh` bez `PATH` uzywa
+wlasnego domyslnego `/bin:/usr/bin` i podstawowe `grep`/`sed` sie znajduja.
+**Na Termuksie to wysadza wszystko** — cale userland jest w
+`/data/data/com.termux/files/usr/bin`, wiec `/bin:/usr/bin` jest praktycznie puste.
+
+Poprawka: `resolve_env()` dziedziczy `os.environ`, gdy nie podano `base_env`
+jawnie. Pokryte regresja `test_resolve_finds_binary_by_bare_name_on_path`.
