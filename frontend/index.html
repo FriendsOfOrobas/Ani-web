@@ -9,33 +9,59 @@
   </head>
   <body>
     <!--
-      Kiosk, mobile-first: telefon jest pilotem. Swiadomie NIE ma tu suwaka
-      postepu ani seeka — patrz docs.md D2. Kontrolki nieobslugiwane przez
-      aktywny backend chowa app.js na podstawie capabilities z /api/status.
+      Kiosk, mobile-first: telefon jest pilotem. Swiadomie NIE ma suwaka postepu
+      ani seeka — docs.md D2. Kontrolki nieobslugiwane przez aktywny backend
+      chowa app.js na podstawie capabilities z /api/status.
     -->
     <header class="topbar">
+      <button id="nav-back" class="ghost" type="button" hidden>‹ Wróć</button>
       <h1>Ani-Web</h1>
-      <button id="nav-toggle" class="ghost" type="button" aria-label="Ustawienia">
-        Ustawienia
-      </button>
+      <button id="nav-settings" class="ghost" type="button">Ustawienia</button>
     </header>
 
     <p id="error" class="error" role="alert" hidden></p>
 
     <main>
-      <section id="screen-play" class="screen">
-        <div class="card">
-          <label for="query">Anime</label>
-          <input id="query" type="text" placeholder="np. one piece" autocomplete="off" />
+      <!-- ekran glowny: kontynuuj + szukanie -->
+      <section id="screen-home" class="screen">
+        <form id="search-form" class="searchbar" autocomplete="off">
+          <input id="search" type="search" placeholder="Szukaj anime…" enterkeyhint="search" />
+          <button class="primary compact" type="submit">Szukaj</button>
+        </form>
 
+        <section id="continue-section" hidden>
+          <h2 class="section-title">Kontynuuj</h2>
+          <ul id="continue-list" class="cards"></ul>
+        </section>
+
+        <section id="results-section" hidden>
+          <h2 class="section-title">Wyniki</h2>
+          <ul id="results-list" class="cards"></ul>
+        </section>
+
+        <p id="home-hint" class="hint"></p>
+      </section>
+
+      <!-- ekran szczegolow anime -->
+      <section id="screen-detail" class="screen" hidden>
+        <article class="detail">
+          <img id="detail-cover" class="cover" alt="" hidden />
+          <div class="detail-body">
+            <h2 id="detail-title">…</h2>
+            <p id="detail-facts" class="facts"></p>
+            <p id="detail-description" class="description"></p>
+          </div>
+        </article>
+
+        <div class="card">
           <div class="row">
             <div class="field">
-              <label for="episode">Odcinek</label>
-              <input id="episode" type="number" min="1" step="1" value="1" inputmode="numeric" />
+              <label for="detail-episode">Odcinek</label>
+              <input id="detail-episode" type="number" min="1" step="1" value="1" inputmode="numeric" />
             </div>
             <div class="field">
-              <label for="quality">Jakość</label>
-              <select id="quality">
+              <label for="detail-quality">Jakość</label>
+              <select id="detail-quality">
                 <option value="1080">1080p</option>
                 <option value="720">720p</option>
                 <option value="480">480p</option>
@@ -43,29 +69,13 @@
               </select>
             </div>
           </div>
-
-          <button id="play" class="primary" type="button">Odtwórz</button>
-
-          <div class="controls">
-            <button id="pause" type="button" hidden>Pauza</button>
-            <button id="stop" type="button">Stop</button>
-          </div>
-        </div>
-
-        <div class="card status-card">
-          <div class="status-line">
-            <span id="state-dot" class="dot" aria-hidden="true"></span>
-            <strong id="state">łączenie…</strong>
-          </div>
-          <dl class="meta">
-            <div><dt>Odtwarzacz</dt><dd id="player">—</dd></div>
-            <div id="now-playing-row" hidden><dt>Teraz</dt><dd id="now-playing">—</dd></div>
-            <div id="position-row" hidden><dt>Pozycja</dt><dd id="position">—</dd></div>
-            <div id="source-row" hidden><dt>Źródło</dt><dd id="source">—</dd></div>
-          </dl>
+          <p id="detail-resume" class="hint"></p>
+          <button id="detail-play" class="primary" type="button">Odtwórz</button>
+          <button id="detail-forget" class="danger" type="button" hidden>Usuń z historii</button>
         </div>
       </section>
 
+      <!-- ekran ustawien -->
       <section id="screen-settings" class="screen" hidden>
         <div class="card">
           <label for="set-quality">Domyślna jakość</label>
@@ -75,12 +85,21 @@
             <option value="480">480p</option>
             <option value="360">360p</option>
           </select>
-
-          <label for="set-episode-step">Domyślny odcinek startowy</label>
-          <input id="set-episode-step" type="number" min="1" step="1" value="1" inputmode="numeric" />
-
           <button id="settings-save" class="primary" type="button">Zapisz</button>
           <p id="settings-hint" class="hint"></p>
+        </div>
+
+        <div class="card">
+          <h2>Odtwórz po tytule</h2>
+          <p class="hint">
+            Omija katalog i podaje tytuł wprost do źródła. Przydatne, gdy AniList
+            nie zna tytułu albo katalog nie odpowiada.
+          </p>
+          <label for="direct-query">Tytuł</label>
+          <input id="direct-query" type="text" placeholder="np. one piece" />
+          <label for="direct-episode">Odcinek</label>
+          <input id="direct-episode" type="number" min="1" step="1" value="1" inputmode="numeric" />
+          <button id="direct-play" type="button">Odtwórz po tytule</button>
         </div>
 
         <div class="card">
@@ -93,6 +112,21 @@
         </div>
       </section>
     </main>
+
+    <!-- pasek odtwarzania, widoczny na kazdym ekranie gdy cos leci -->
+    <footer id="nowbar" class="nowbar" hidden>
+      <div class="nowbar-info">
+        <span id="state-dot" class="dot" aria-hidden="true"></span>
+        <div class="nowbar-text">
+          <strong id="now-title">—</strong>
+          <small id="now-meta"></small>
+        </div>
+      </div>
+      <div class="nowbar-actions">
+        <button id="pause" type="button" hidden>Pauza</button>
+        <button id="stop" type="button">Stop</button>
+      </div>
+    </footer>
 
     <script src="app.js"></script>
   </body>

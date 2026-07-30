@@ -47,9 +47,12 @@ class SettingsStore:
 
 
 class AppState:
-    def __init__(self, player, source=None):
+    def __init__(self, player, source=None, mapper=None):
         self.player = player
         self.source = source
+        # Mostek katalog -> zrodlo (docs.md D7). Opcjonalny: bez niego dziala
+        # tylko odtwarzanie po tytule wprost.
+        self.mapper = mapper
         self.current = None
         self.last_error = None
         self._subscribers = []
@@ -93,19 +96,31 @@ class AppState:
 
     # --- akcje ------------------------------------------------------------
 
-    def play(self, query, episode=1, quality=None, position=0):
+    def play(self, query=None, anilist_id=None, episode=1, quality=None, position=0):
         """Rozwiazuje adres just-in-time i uruchamia odtwarzacz.
 
         Kolejnosc jest istotna: adresy sa tokenizowane i krotko zyjace, wiec
         resolve() musi byc tuz przed play(), nigdy z wyprzedzeniem.
+
+        Dwa tryby wywolania:
+          - `query` — tytul wprost, bez katalogu,
+          - `anilist_id` — mapowanie tytulu na zrodlo robi LazyMapper (docs.md D7).
         """
         self.last_error = None
-
-        if self.source is None:
-            raise SourceError("Brak skonfigurowanego zrodla")
+        meta = None
 
         try:
-            stream = self.source.resolve(query, episode, quality)
+            if anilist_id is not None:
+                if self.mapper is None:
+                    raise SourceError("Katalog nie jest skonfigurowany")
+                stream, meta = self.mapper.resolve(anilist_id, episode, quality)
+                query = meta.title
+            else:
+                if self.source is None:
+                    raise SourceError("Brak skonfigurowanego zrodla")
+                if not query:
+                    raise SourceError("Brak tytulu do wyszukania")
+                stream = self.source.resolve(query, episode, quality)
         except SourceError as exc:
             self.last_error = str(exc)
             self.publish()
@@ -116,6 +131,10 @@ class AppState:
             "episode": episode,
             "quality": quality,
             "stream_url": stream.stream_url,
+            "anilist_id": meta.anilist_id if meta else anilist_id,
+            "title": meta.title if meta else query,
+            "cover": meta.cover if meta else "",
+            "total_episodes": meta.episodes if meta else 0,
         }
 
         try:

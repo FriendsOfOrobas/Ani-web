@@ -163,9 +163,16 @@ Ani-Web/
 - `POST /api/stop` — zatrzymanie
 - `GET  /api/settings` — odczyt ustawień
 - `POST /api/settings` — zapis ustawień
-- `GET  /api/anime` — lista / szczegóły (Stage 1)
+- `GET  /api/anime?q=…` — wyszukiwanie w katalogu (AniList), Stage 1
+- `GET  /api/anime/<anilist_id>` — szczegóły: opis, okładka, liczba odcinków
+- `GET  /api/history` — ostatnio oglądane dla uid z ciasteczka, Stage 3
+- `GET  /api/history/<anilist_id>` — od czego kontynuować, Stage 3
+- `DELETE /api/history/<anilist_id>` — usunięcie pozycji z historii
 
 **Świadomie nie ma `/api/seek`** — patrz §2.
+
+`POST /api/play` przyjmuje **albo** `query` (tytuł wprost, jak dotąd), **albo**
+`anilist_id` — wtedy backend sam mapuje tytuł na źródło (leniwie, patrz D7).
 
 ## 7. Problem Referera (nie do pominięcia)
 
@@ -277,6 +284,36 @@ z Activity robiącą `startActivityForResult` i raportującą pozycję po HTTP d
 backendu — podnosi wznawianie z „przybliżonego" do „dokładnego". Poza
 założeniem „czysty HTML/JS + Python", więc świadomie odłożone.
 
+### D7 — Mapowanie tytułu na źródło jest LENIWE (dopiero przy `play`)
+Katalog opiera się na AniList, a odtwarzanie na allanime. To dwa niezależne
+światy i trzeba je zmostkować mapowaniem tytułu.
+
+**Decyzja:** mapowanie robimy **leniwie, dopiero przy `POST /api/play`**, nie
+z góry przy wyszukiwaniu. Powód jest praktyczny: allanime potrafi zniknąć na
+godziny (zaobserwowane 2026-07-30 — zagadka Cloudflare na `api.mkissa.net`,
+HTTP 403 dla każdego klienta bez JS). Przy mapowaniu z góry padałoby całe
+wyszukiwanie; przy leniwym **katalog, opisy i okładki działają normalnie**,
+a błąd pojawia się tylko przy próbie odtworzenia konkretnego odcinka.
+
+Mechanika: kandydatów na zapytanie do allanime bierzemy z AniList w kolejności
+`romaji` → `english` → `synonyms`, i próbujemy po kolei. Pierwszy, który zwróci
+adres, trafia do tabeli `mapping` w cache i od tej pory jest używany od razu.
+Tym samym `rapidfuzz` z §5.4 **nie jest na tym etapie potrzebny** — ani-cli nie
+udostępnia listy wyników wyszukiwania, więc nie ma czego dopasowywać rozmyto;
+zostaje próbowanie kandydatów. Dodanie `rapidfuzz` ma sens dopiero, gdy
+zejdziemy do API allanime bezpośrednio albo na `anipy-cli`.
+
+### D8 — Stage 3 przed Stage 2
+Historia i wznawianie nie zależą od sprzętu ani od self-adb, a Stage 2 jest
+zablokowany kwestiami otwartymi z D6. **Decyzja:** kolejność to Stage 1 →
+Stage 3 → Stage 2 (patrz §12).
+
+Konsekwencja dla wznawiania: dopóki nie ma Stage 2, pozycję znamy tylko z
+backendów, które ją raportują (`capabilities.position` — czyli `mpv-ipc` na
+Linuksie). Dla `AniCliPlayer` i `AndroidIntentPlayer` historia zapisuje sam
+**numer odcinka**, bez pozycji w czasie. To wystarcza do „kontynuuj od odcinka
+N" i jest uczciwe wobec D2.
+
 ### D6 — Kwestie otwarte
 - Który konkretnie box i wersja Androida? Bez tego nie da się ocenić, czy
   self-adb będzie stabilny — a to decyduje, czy Stage 2 wchodzi w ogóle.
@@ -287,11 +324,16 @@ założeniem „czysty HTML/JS + Python", więc świadomie odłożone.
 
 ## 12. Plan kolejnych kroków
 
+Kolejność zmieniona względem pierwotnej — patrz D8. Stage 2 jest ostatni, bo
+blokują go kwestie otwarte z D6 (jaki box, root, Kodi).
+
 - **Stage 0** — pipeline end-to-end: ani-cli → URL → odtwarzacz, status po SSE.
   Kryterium: odcinek leci pełnoekranowo na TV, włączony z telefonu.
-- **Stage 1** — wyszukiwanie i katalog: AniList, cache SQLite, `rapidfuzz`.
+- **Stage 1** — wyszukiwanie i katalog: AniList + Jikan jako fallback, cache
+  SQLite, leniwe mapowanie tytułu na źródło (D7). Bez `rapidfuzz` — patrz D7.
+- **Stage 3** — historia i wznawianie (uid z ciasteczka, SQLite).
 - **Stage 2** — kanał kontrolny: self-adb, play/pause/stop, polling `dumpsys`.
-- **Stage 3** — historia i wznawianie.
+  **Zablokowany do czasu odpowiedzi na D6.**
 
 ## 13. Materiały źródłowe
 

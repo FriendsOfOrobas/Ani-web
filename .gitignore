@@ -4,7 +4,7 @@ __pycache__/
 .venv/
 venv/
 
-# lokalny stan i cache aplikacji
-data/cache/
-data/settings/
+# Lokalny stan urzadzenia: cache metadanych, ustawienia, historia, baza SQLite.
+# Caly katalog, bo od Stage 1 leza tu tez pliki bazy (-wal, -shm).
+data/
 backend/config.local.json

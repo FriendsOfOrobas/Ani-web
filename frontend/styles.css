@@ -260,3 +260,198 @@ button.ghost {
 .caps li[data-on="true"] span:last-child {
   color: var(--ok);
 }
+
+/* --- Stage 1: katalog --- */
+
+.searchbar {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.searchbar input {
+  flex: 1;
+  min-width: 0;
+}
+
+button.compact {
+  width: auto;
+  margin-top: 0;
+  flex: none;
+}
+
+.section-title {
+  margin: 0 0 0.6rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.card-item {
+  min-width: 0;
+}
+
+.card-button {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  gap: 0.5rem;
+  background: transparent;
+  border: none;
+  text-align: left;
+}
+
+.card-button img,
+.cover-placeholder {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+
+.cover-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 1.5rem;
+}
+
+.card-button:active img {
+  opacity: 0.75;
+}
+
+.card-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.card-caption strong {
+  font-size: 0.9rem;
+  line-height: 1.25;
+  /* Dwie linie tytulu, resztę ucinamy — karty muszą trzymać równy rytm siatki. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-caption small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+/* --- szczegoly --- */
+
+.detail {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.detail .cover {
+  width: 8rem;
+  flex: none;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
+.detail-body {
+  min-width: 0;
+}
+
+.detail-body h2 {
+  margin: 0 0 0.3rem;
+  font-size: 1.15rem;
+  line-height: 1.25;
+}
+
+.facts {
+  margin: 0 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.description {
+  margin: 0;
+  font-size: 0.9rem;
+  white-space: pre-line;
+}
+
+button.danger {
+  width: 100%;
+  margin-top: 0.5rem;
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 45%, var(--line));
+}
+
+/* --- pasek odtwarzania --- */
+
+.nowbar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  max-width: 32rem;
+  margin: 1rem auto 0;
+  padding: 0.7rem 0.85rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.nowbar-info {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.nowbar-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nowbar-text strong {
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nowbar-text small {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.nowbar-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex: none;
+}
+
+.nowbar-actions button {
+  min-height: 40px;
+  padding: 0 0.8rem;
+  font-size: 0.9rem;
+}

@@ -8,6 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from ani_runner import ResolvedStream, SourceError
+from db import init_schema
+from history import HistoryStore
+from metadata import AnimeMeta, MetadataError
 from players import AniCliPlayer, SimulatedPlayer
 from server import UID_COOKIE, create_app
 from state import SettingsStore
@@ -31,9 +34,12 @@ class StubSource:
 
     name = "stub"
 
-    def __init__(self, error=None, missing=None):
+    def __init__(self, error=None, missing=None, fail_for=None):
         self.error = error
         self.missing = missing or []
+        # Tytuly, dla ktorych to zrodlo udaje pudlo — pod testy kolejnych
+        # kandydatow w leniwym mapowaniu.
+        self.fail_for = set(fail_for or ())
         self.calls = []
 
     def check(self):
@@ -43,11 +49,83 @@ class StubSource:
         self.calls.append((provider_id, episode, quality))
         if self.error:
             raise self.error
+        if provider_id in self.fail_for:
+            raise SourceError(f"brak zrodel dla {provider_id!r}")
         return ResolvedStream(
             stream_url="http://cdn.example.test/v.mp4",
             referer="https://youtu-chan.com",
             headers={"Referer": "https://youtu-chan.com"},
         )
+
+
+class StubMetadata:
+    """Katalog bez sieci. Trzyma mapowania w pamieci, tak jak MetadataService w SQLite."""
+
+    def __init__(self, metas=None, error=None):
+        self.metas = {m.anilist_id: m for m in (metas or [DEFAULT_META])}
+        self.error = error
+        self.mappings = {}
+        self.searches = []
+
+    def search(self, query, limit=20):
+        self.searches.append((query, limit))
+        if self.error:
+            raise self.error
+        return list(self.metas.values())[:limit]
+
+    def details(self, anilist_id):
+        if self.error:
+            raise self.error
+        if int(anilist_id) not in self.metas:
+            raise MetadataError(f"Brak anime {anilist_id}")
+        return self.metas[int(anilist_id)]
+
+    def cached_mapping(self, anilist_id):
+        return self.mappings.get(int(anilist_id))
+
+    def remember_mapping(self, anilist_id, provider_query):
+        self.mappings[int(anilist_id)] = provider_query
+
+    def forget_mapping(self, anilist_id):
+        self.mappings.pop(int(anilist_id), None)
+
+
+class PositionPlayer(SimulatedPlayer):
+    """Backend, ktory raportuje pozycje — jak mpv-ipc, inaczej niz ani-cli.
+
+    Potrzebny, bo caly zapis pozycji w Stage 3 zalezy od `capabilities.position`.
+    """
+
+    name = "pozycyjny"
+    capabilities = SimulatedPlayer.capabilities.__class__(
+        pause=True, stop=True, position=True, ended_events=True
+    )
+
+    def __init__(self, position=0, duration=0):
+        super().__init__()
+        self.position = position
+        self.duration = duration
+
+    def status(self):
+        payload = super().status()
+        if payload["state"] in {"playing", "paused"}:
+            payload["position"] = self.position
+            payload["duration"] = self.duration
+        return payload
+
+
+DEFAULT_META = AnimeMeta(
+    anilist_id=1,
+    romaji="Cowboy Bebop",
+    english="Cowboy Bebop",
+    synonyms=["Kowboj Bebop"],
+    description="Opis testowy.",
+    episodes=26,
+    year=1998,
+    format="TV",
+    score=86,
+    cover="https://example.test/cover.jpg",
+)
 
 
 class ServerTestCase(unittest.TestCase):
@@ -57,15 +135,23 @@ class ServerTestCase(unittest.TestCase):
         tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(tmpdir.cleanup)
         self.settings_path = Path(tmpdir.name) / "settings.json"
+        # Historia idzie na prawdziwym SQLite — jest szybka, a atrapa nie
+        # sprawdzilaby SQL-a z COALESCE, ktory jest tu cala trudnoscia.
+        self.db_path = Path(tmpdir.name) / "test.sqlite3"
+        init_schema(self.db_path)
 
-    def build(self, player=None, source=None):
+    def build(self, player=None, source=None, metadata=None):
         self.player = player or SimulatedPlayer()
         self.source = source if source is not None else StubSource()
+        self.metadata = metadata if metadata is not None else StubMetadata()
+        self.history = HistoryStore(self.db_path)
         self.app = create_app(
             config=dict(CONFIG),
             player=self.player,
             source=self.source,
             settings=SettingsStore(self.settings_path),
+            metadata=self.metadata,
+            history=self.history,
         )
         return self.app.test_client()
 
@@ -193,10 +279,167 @@ class ErrorMappingTests(ServerTestCase):
         client.post("/api/play", json={"query": "x"})
         self.assertEqual(client.get("/api/status").get_json()["last_error"], "padlo")
 
-    def test_catalogue_is_honest_about_not_existing_yet(self):
+    def test_catalogue_failure_is_its_own_kind(self):
+        # Katalog i zrodlo padaja niezaleznie (docs.md D7) — UI musi je rozroznic,
+        # bo awaria AniList nie blokuje odtwarzania po tytule wprost.
+        client = self.build(metadata=StubMetadata(error=MetadataError("AniList padl")))
+        response = client.get("/api/anime?q=cokolwiek")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_json()["kind"], "catalogue")
+
+
+class CatalogueTests(ServerTestCase):
+    def test_search_requires_query(self):
         response = self.build().get("/api/anime")
-        self.assertEqual(response.status_code, 501)
-        self.assertEqual(response.get_json()["kind"], "todo")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["kind"], "request")
+
+    def test_search_returns_results_with_covers(self):
+        payload = self.build().get("/api/anime?q=cowboy").get_json()
+        self.assertEqual(payload["query"], "cowboy")
+        first = payload["results"][0]
+        self.assertEqual(first["anilist_id"], 1)
+        self.assertEqual(first["title"], "Cowboy Bebop")
+        self.assertTrue(first["cover"])
+
+    def test_search_limit_is_clamped(self):
+        client = self.build()
+        client.get("/api/anime?q=x&limit=999")
+        self.assertLessEqual(self.metadata.searches[0][1], 50)
+
+    def test_details_include_resume_hint(self):
+        payload = self.build().get("/api/anime/1").get_json()
+        self.assertEqual(payload["title"], "Cowboy Bebop")
+        self.assertEqual(payload["episodes"], 26)
+        self.assertEqual(payload["resume"], {"episode": 1, "position": 0, "reason": "nowe"})
+
+    def test_details_of_unknown_anime_is_a_catalogue_error(self):
+        response = self.build().get("/api/anime/999")
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_json()["kind"], "catalogue")
+
+
+class LazyMappingTests(ServerTestCase):
+    def test_play_by_anilist_id_maps_title_lazily(self):
+        client = self.build()
+        payload = client.post("/api/play", json={"anilist_id": 1, "episode": 2}).get_json()
+
+        self.assertEqual(payload["state"], "playing")
+        self.assertEqual(payload["current"]["title"], "Cowboy Bebop")
+        self.assertEqual(payload["current"]["anilist_id"], 1)
+        # Do zrodla poszedl tytul, nie id.
+        self.assertEqual(self.source.calls, [("Cowboy Bebop", 2, "1080")])
+        # Zwyciezca zapamietany, zeby druga proba nie zgadywala od nowa.
+        self.assertEqual(self.metadata.cached_mapping(1), "Cowboy Bebop")
+
+    def test_play_falls_through_to_next_candidate(self):
+        # Pierwszy kandydat (romaji) pada, drugi ma zadzialac.
+        source = StubSource(fail_for={"Cowboy Bebop"})
+        client = self.build(source=source)
+
+        payload = client.post("/api/play", json={"anilist_id": 1}).get_json()
+        self.assertEqual(payload["state"], "playing")
+        self.assertEqual([call[0] for call in source.calls], ["Cowboy Bebop", "Kowboj Bebop"])
+        self.assertEqual(self.metadata.cached_mapping(1), "Kowboj Bebop")
+
+    def test_all_candidates_failing_is_a_source_error(self):
+        source = StubSource(error=SourceError("brak zrodel"))
+        response = self.build(source=source).post("/api/play", json={"anilist_id": 1})
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_json()["kind"], "source")
+
+    def test_play_still_accepts_a_bare_title(self):
+        client = self.build()
+        payload = client.post("/api/play", json={"query": "naruto"}).get_json()
+        self.assertEqual(payload["current"]["query"], "naruto")
+        self.assertIsNone(payload["current"]["anilist_id"])
+
+
+class HistoryTests(ServerTestCase):
+    def test_history_starts_empty(self):
+        self.assertEqual(self.build().get("/api/history").get_json(), {"entries": []})
+
+    def test_play_records_history(self):
+        client = self.build()
+        client.post("/api/play", json={"anilist_id": 1, "episode": 3})
+
+        entries = client.get("/api/history").get_json()["entries"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["anilist_id"], 1)
+        self.assertEqual(entries[0]["episode"], 3)
+        self.assertEqual(entries[0]["title"], "Cowboy Bebop")
+
+    def test_playing_by_bare_title_records_nothing(self):
+        # Bez anilist_id nie mamy czego wpisac do historii katalogowej.
+        client = self.build()
+        client.post("/api/play", json={"query": "naruto"})
+        self.assertEqual(client.get("/api/history").get_json()["entries"], [])
+
+    def test_stop_saves_position_when_player_reports_it(self):
+        client = self.build(player=PositionPlayer(position=640, duration=1400))
+        client.post("/api/play", json={"anilist_id": 1, "episode": 1})
+        client.post("/api/stop")
+
+        entry = client.get("/api/history/1").get_json()["entry"]
+        self.assertEqual(entry["position"], 640)
+        self.assertEqual(entry["duration"], 1400)
+
+    def test_stop_saves_nothing_when_player_has_no_position(self):
+        # SimulatedPlayer nie raportuje pozycji — historia zostaje przy odcinku.
+        client = self.build()
+        client.post("/api/play", json={"anilist_id": 1, "episode": 1})
+        client.post("/api/stop")
+        self.assertIsNone(client.get("/api/history/1").get_json()["entry"]["position"])
+
+    def test_resume_offers_saved_position(self):
+        client = self.build(player=PositionPlayer(position=640, duration=1400))
+        client.post("/api/play", json={"anilist_id": 1, "episode": 1})
+        client.post("/api/stop")
+
+        resume = client.get("/api/anime/1").get_json()["resume"]
+        self.assertEqual(resume, {"episode": 1, "position": 640, "reason": "wznowienie"})
+
+    def test_changing_episode_clears_stale_position(self):
+        # Bez tego wznowienie odcinka 2 skakaloby do czasu z odcinka 1.
+        client = self.build(player=PositionPlayer(position=640, duration=1400))
+        client.post("/api/play", json={"anilist_id": 1, "episode": 1})
+        client.post("/api/stop")
+        client.post("/api/play", json={"anilist_id": 1, "episode": 2})
+
+        entry = client.get("/api/history/1").get_json()["entry"]
+        self.assertEqual(entry["episode"], 2)
+        self.assertIsNone(entry["position"])
+
+    def test_finished_episode_resumes_at_the_next_one(self):
+        client = self.build(player=PositionPlayer(position=1390, duration=1400))
+        client.post("/api/play", json={"anilist_id": 1, "episode": 5})
+        client.post("/api/stop")
+
+        resume = client.get("/api/anime/1").get_json()["resume"]
+        self.assertEqual(resume["episode"], 6)
+        self.assertEqual(resume["reason"], "nastepny odcinek")
+
+    def test_history_entry_reports_resume(self):
+        client = self.build()
+        client.post("/api/play", json={"anilist_id": 1, "episode": 4})
+        payload = client.get("/api/history/1").get_json()
+        self.assertEqual(payload["entry"]["episode"], 4)
+        self.assertEqual(payload["resume"]["episode"], 4)
+
+    def test_delete_removes_entry(self):
+        client = self.build()
+        client.post("/api/play", json={"anilist_id": 1})
+        self.assertEqual(client.delete("/api/history/1").get_json(), {"deleted": True})
+        self.assertEqual(client.get("/api/history").get_json()["entries"], [])
+
+    def test_deleting_missing_entry_is_404(self):
+        self.assertEqual(self.build().delete("/api/history/424242").status_code, 404)
+
+    def test_history_is_per_uid(self):
+        first = self.build()
+        first.post("/api/play", json={"anilist_id": 1})
+        second = self.app.test_client()
+        self.assertEqual(second.get("/api/history").get_json()["entries"], [])
 
 
 class SettingsTests(ServerTestCase):

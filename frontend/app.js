@@ -5,39 +5,59 @@
  * co odtwarzacz potrafi. Wszystko czyta z `capabilities` w /api/status i chowa
  * kontrolki, ktorych aktywny backend nie obsluguje (docs.md §2.1).
  *
- * Suwaka postepu tu nie ma i nie ma go byc — docs.md D2.
+ * Suwaka postepu tu nie ma i nie ma byc — docs.md D2.
+ *
+ * Katalog (AniList) i zrodlo (allanime) sa rozdzielone: wyszukiwanie i opisy
+ * dzialaja nawet gdy zrodlo padnie, a blad pojawia sie dopiero przy Odtworz
+ * (docs.md D7). Dlatego bledy `kind: "catalogue"` i `kind: "source"` sa
+ * pokazywane, ale zaden z nich nie blokuje drugiej czesci UI.
  */
 
 const el = (id) => document.getElementById(id);
 
 const ui = {
   error: el("error"),
-  navToggle: el("nav-toggle"),
-  screenPlay: el("screen-play"),
-  screenSettings: el("screen-settings"),
+  navBack: el("nav-back"),
+  navSettings: el("nav-settings"),
 
-  query: el("query"),
-  episode: el("episode"),
-  quality: el("quality"),
-  play: el("play"),
-  pause: el("pause"),
-  stop: el("stop"),
+  screens: {
+    home: el("screen-home"),
+    detail: el("screen-detail"),
+    settings: el("screen-settings"),
+  },
 
-  stateDot: el("state-dot"),
-  state: el("state"),
-  player: el("player"),
-  nowPlayingRow: el("now-playing-row"),
-  nowPlaying: el("now-playing"),
-  positionRow: el("position-row"),
-  position: el("position"),
-  sourceRow: el("source-row"),
-  source: el("source"),
+  searchForm: el("search-form"),
+  search: el("search"),
+  continueSection: el("continue-section"),
+  continueList: el("continue-list"),
+  resultsSection: el("results-section"),
+  resultsList: el("results-list"),
+  homeHint: el("home-hint"),
+
+  detailCover: el("detail-cover"),
+  detailTitle: el("detail-title"),
+  detailFacts: el("detail-facts"),
+  detailDescription: el("detail-description"),
+  detailEpisode: el("detail-episode"),
+  detailQuality: el("detail-quality"),
+  detailResume: el("detail-resume"),
+  detailPlay: el("detail-play"),
+  detailForget: el("detail-forget"),
 
   setQuality: el("set-quality"),
-  setEpisodeStep: el("set-episode-step"),
   settingsSave: el("settings-save"),
   settingsHint: el("settings-hint"),
+  directQuery: el("direct-query"),
+  directEpisode: el("direct-episode"),
+  directPlay: el("direct-play"),
   capabilities: el("capabilities"),
+
+  nowbar: el("nowbar"),
+  stateDot: el("state-dot"),
+  nowTitle: el("now-title"),
+  nowMeta: el("now-meta"),
+  pause: el("pause"),
+  stop: el("stop"),
 };
 
 const STATE_LABELS = {
@@ -47,7 +67,7 @@ const STATE_LABELS = {
   stopped: "zatrzymany",
   ended: "koniec",
   unknown: "nieznany",
-  offline: "brak połączenia z backendem",
+  offline: "brak połączenia",
 };
 
 const CAPABILITY_LABELS = {
@@ -59,17 +79,25 @@ const CAPABILITY_LABELS = {
   ended_events: "wykrycie końca",
 };
 
+const FORMAT_LABELS = {
+  TV: "serial",
+  TV_SHORT: "serial krótki",
+  MOVIE: "film",
+  SPECIAL: "special",
+  OVA: "OVA",
+  ONA: "ONA",
+  MUSIC: "teledysk",
+};
+
 let capabilities = {};
+let currentDetail = null;
+let defaultQuality = "1080";
 
 // --- pomocnicze -----------------------------------------------------------
 
 function showError(message) {
-  ui.error.textContent = message;
+  ui.error.textContent = message || "";
   ui.error.hidden = !message;
-}
-
-function clearError() {
-  showError("");
 }
 
 function formatTime(seconds) {
@@ -82,12 +110,6 @@ function formatTime(seconds) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-function setRow(row, valueEl, value) {
-  const has = value !== null && value !== undefined && value !== "";
-  row.hidden = !has;
-  if (has) valueEl.textContent = value;
-}
-
 async function api(path, options) {
   const response = await fetch(path, options);
   let data = {};
@@ -97,25 +119,257 @@ async function api(path, options) {
     // Puste albo nie-JSON — zostaje sam kod statusu.
   }
   if (!response.ok) {
-    throw new Error(data.error || `Błąd ${response.status}`);
+    const error = new Error(data.error || `Błąd ${response.status}`);
+    error.kind = data.kind;
+    throw error;
   }
   return data;
 }
 
-function post(path, body) {
-  return api(path, {
+const post = (path, body) =>
+  api(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {}),
   });
+
+async function withBusy(button, action) {
+  const label = button.textContent;
+  button.disabled = true;
+  showError("");
+  try {
+    return await action();
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
 }
 
-// --- renderowanie ---------------------------------------------------------
+// --- nawigacja ------------------------------------------------------------
+
+let screenStack = ["home"];
+
+function show(name) {
+  for (const [key, node] of Object.entries(ui.screens)) {
+    node.hidden = key !== name;
+  }
+  ui.navBack.hidden = name === "home";
+  ui.navSettings.hidden = name !== "home";
+  window.scrollTo(0, 0);
+}
+
+function goTo(name) {
+  if (screenStack[screenStack.length - 1] !== name) screenStack.push(name);
+  show(name);
+}
+
+ui.navBack.addEventListener("click", () => {
+  screenStack.pop();
+  show(screenStack[screenStack.length - 1] || "home");
+});
+
+ui.navSettings.addEventListener("click", () => goTo("settings"));
+
+// --- karty anime ----------------------------------------------------------
+
+function animeCard(item, extra) {
+  const li = document.createElement("li");
+  li.className = "card-item";
+
+  const button = document.createElement("button");
+  button.className = "card-button";
+  button.type = "button";
+  button.addEventListener("click", () => openDetail(item.anilist_id));
+
+  if (item.cover) {
+    const img = document.createElement("img");
+    img.src = item.cover;
+    img.alt = "";
+    img.loading = "lazy";
+    button.append(img);
+  } else {
+    const placeholder = document.createElement("span");
+    placeholder.className = "cover-placeholder";
+    placeholder.textContent = "?";
+    button.append(placeholder);
+  }
+
+  const caption = document.createElement("span");
+  caption.className = "card-caption";
+
+  const title = document.createElement("strong");
+  title.textContent = item.title;
+  caption.append(title);
+
+  const sub = document.createElement("small");
+  sub.textContent = extra || describeAnime(item);
+  caption.append(sub);
+
+  button.append(caption);
+  li.append(button);
+  return li;
+}
+
+function describeAnime(item) {
+  const bits = [];
+  if (item.year) bits.push(item.year);
+  if (item.format) bits.push(FORMAT_LABELS[item.format] || item.format.toLowerCase());
+  if (item.episodes) bits.push(`${item.episodes} odc.`);
+  return bits.join(" · ");
+}
+
+// --- szukanie -------------------------------------------------------------
+
+ui.searchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const query = ui.search.value.trim();
+  if (!query) return;
+
+  return withBusy(ui.searchForm.querySelector("button"), async () => {
+    ui.homeHint.textContent = "Szukam…";
+    const data = await api(`/api/anime?q=${encodeURIComponent(query)}`);
+    ui.resultsList.replaceChildren(...data.results.map((item) => animeCard(item)));
+    ui.resultsSection.hidden = data.results.length === 0;
+    ui.homeHint.textContent = data.results.length
+      ? ""
+      : `Brak wyników dla „${query}”.`;
+  });
+});
+
+// --- szczegoly ------------------------------------------------------------
+
+function renderResume(resume, entry) {
+  if (!resume) {
+    ui.detailResume.textContent = "";
+    return;
+  }
+  ui.detailEpisode.value = resume.episode;
+
+  if (resume.reason === "wznowienie") {
+    ui.detailResume.textContent = `Wznowisz odcinek ${resume.episode} od ${formatTime(resume.position)}.`;
+  } else if (resume.reason === "nastepny odcinek") {
+    ui.detailResume.textContent = `Poprzedni odcinek dokończony — proponuję odcinek ${resume.episode}.`;
+  } else if (resume.reason === "koniec serii") {
+    ui.detailResume.textContent = "Obejrzane do końca.";
+  } else if (entry) {
+    ui.detailResume.textContent = `Ostatnio odcinek ${resume.episode}.`;
+  } else {
+    ui.detailResume.textContent = "";
+  }
+}
+
+async function openDetail(anilistId) {
+  goTo("detail");
+  currentDetail = null;
+  ui.detailTitle.textContent = "Ładowanie…";
+  ui.detailFacts.textContent = "";
+  ui.detailDescription.textContent = "";
+  ui.detailCover.hidden = true;
+  ui.detailForget.hidden = true;
+  ui.detailResume.textContent = "";
+
+  try {
+    const meta = await api(`/api/anime/${anilistId}`);
+    currentDetail = meta;
+
+    ui.detailTitle.textContent = meta.title;
+    ui.detailFacts.textContent = [describeAnime(meta), meta.score ? `${meta.score}/100` : ""]
+      .filter(Boolean)
+      .join(" · ");
+    ui.detailDescription.textContent = meta.description || "Brak opisu.";
+    if (meta.cover) {
+      ui.detailCover.src = meta.cover;
+      ui.detailCover.hidden = false;
+    }
+    ui.detailQuality.value = defaultQuality;
+    ui.detailEpisode.max = meta.episodes || "";
+
+    const history = await api(`/api/history/${anilistId}`);
+    ui.detailForget.hidden = !history.entry;
+    renderResume(meta.resume, history.entry);
+  } catch (err) {
+    showError(err.message);
+    ui.detailTitle.textContent = "Nie udało się wczytać";
+  }
+}
+
+ui.detailPlay.addEventListener("click", () =>
+  withBusy(ui.detailPlay, async () => {
+    if (!currentDetail) return;
+    ui.detailPlay.textContent = "Szukam źródła…";
+    const snapshot = await post("/api/play", {
+      anilist_id: currentDetail.anilist_id,
+      episode: Number(ui.detailEpisode.value) || 1,
+      quality: ui.detailQuality.value,
+      position: Number(currentDetail.resume?.position || 0),
+    });
+    render(snapshot);
+    loadContinue();
+  })
+);
+
+ui.detailForget.addEventListener("click", () =>
+  withBusy(ui.detailForget, async () => {
+    await api(`/api/history/${currentDetail.anilist_id}`, { method: "DELETE" });
+    ui.detailForget.hidden = true;
+    ui.detailResume.textContent = "";
+    ui.detailEpisode.value = 1;
+    loadContinue();
+  })
+);
+
+// --- kontynuuj ------------------------------------------------------------
+
+async function loadContinue() {
+  try {
+    const data = await api("/api/history");
+    const entries = data.entries || [];
+    ui.continueList.replaceChildren(
+      ...entries.map((entry) =>
+        animeCard(
+          {
+            anilist_id: entry.anilist_id,
+            title: entry.title || `#${entry.anilist_id}`,
+            cover: entry.cover,
+          },
+          entry.position
+            ? `odc. ${entry.episode} · ${formatTime(entry.position)}`
+            : `odc. ${entry.episode}`
+        )
+      )
+    );
+    ui.continueSection.hidden = entries.length === 0;
+  } catch {
+    // Historia to dodatek — jej brak nie moze psuc ekranu glownego.
+    ui.continueSection.hidden = true;
+  }
+}
+
+// --- odtwarzanie po tytule (obejscie katalogu) ----------------------------
+
+ui.directPlay.addEventListener("click", () =>
+  withBusy(ui.directPlay, async () => {
+    const query = ui.directQuery.value.trim();
+    if (!query) {
+      showError("Podaj tytuł.");
+      return;
+    }
+    render(
+      await post("/api/play", {
+        query,
+        episode: Number(ui.directEpisode.value) || 1,
+        quality: defaultQuality,
+      })
+    );
+  })
+);
+
+// --- pasek odtwarzania ----------------------------------------------------
 
 function applyCapabilities(caps) {
   capabilities = caps || {};
-
-  // Jedyna reguła: czego backend nie potrafi, tego nie pokazujemy.
   ui.pause.hidden = !capabilities.pause;
   ui.stop.hidden = !capabilities.stop;
 
@@ -134,132 +388,78 @@ function applyCapabilities(caps) {
 }
 
 function render(data) {
+  if (!data) return;
   if (data.capabilities) applyCapabilities(data.capabilities);
 
   const state = data.state || "unknown";
-  ui.state.textContent = STATE_LABELS[state] || state;
-  ui.stateDot.dataset.state = state;
-  ui.player.textContent = data.player || "—";
-
   const current = data.current;
-  setRow(
-    ui.nowPlayingRow,
-    ui.nowPlaying,
-    current ? `${current.query} — odc. ${current.episode}` : null
-  );
 
-  // Pozycja tylko gdy backend ja faktycznie raportuje (docs.md D2).
-  if (capabilities.position && typeof data.position === "number") {
-    const suffix = data.duration ? ` / ${formatTime(data.duration)}` : "";
-    setRow(ui.positionRow, ui.position, formatTime(data.position) + suffix);
+  ui.stateDot.dataset.state = state;
+  ui.nowbar.hidden = !current && state !== "playing" && state !== "paused";
+
+  if (current) {
+    ui.nowTitle.textContent = current.title || current.query || "—";
+    const bits = [`odc. ${current.episode}`, STATE_LABELS[state] || state];
+    if (capabilities.position && typeof data.position === "number") {
+      const suffix = data.duration ? ` / ${formatTime(data.duration)}` : "";
+      bits.push(formatTime(data.position) + suffix);
+    }
+    ui.nowMeta.textContent = bits.join(" · ");
   } else {
-    ui.positionRow.hidden = true;
+    ui.nowTitle.textContent = STATE_LABELS[state] || state;
+    ui.nowMeta.textContent = data.player ? `odtwarzacz: ${data.player}` : "";
   }
 
-  if (data.source) {
-    const missing = data.source.missing || [];
-    setRow(
-      ui.sourceRow,
-      ui.source,
-      missing.length ? `${data.source.name} — brakuje: ${missing.join(", ")}` : data.source.name
-    );
-  }
-
-  if (data.last_error) {
-    showError(data.last_error);
-  }
+  if (data.last_error) showError(data.last_error);
 }
 
-// --- akcje ----------------------------------------------------------------
+ui.pause.addEventListener("click", () =>
+  withBusy(ui.pause, async () => render(await post("/api/pause")))
+);
 
-async function withBusy(button, action) {
-  button.disabled = true;
-  clearError();
-  try {
-    render(await action());
-  } catch (err) {
-    showError(err.message);
-  } finally {
-    button.disabled = false;
-  }
-}
-
-ui.play.addEventListener("click", () => {
-  const query = ui.query.value.trim();
-  if (!query) {
-    showError("Podaj tytuł anime.");
-    ui.query.focus();
-    return;
-  }
-  return withBusy(ui.play, () =>
-    post("/api/play", {
-      query,
-      episode: Number(ui.episode.value) || 1,
-      quality: ui.quality.value,
-    })
-  );
-});
-
-ui.pause.addEventListener("click", () => withBusy(ui.pause, () => post("/api/pause")));
-ui.stop.addEventListener("click", () => withBusy(ui.stop, () => post("/api/stop")));
-
-// --- ekrany ---------------------------------------------------------------
-
-ui.navToggle.addEventListener("click", () => {
-  const showSettings = ui.screenSettings.hidden;
-  ui.screenSettings.hidden = !showSettings;
-  ui.screenPlay.hidden = showSettings;
-  ui.navToggle.textContent = showSettings ? "Wróć" : "Ustawienia";
-});
+ui.stop.addEventListener("click", () =>
+  withBusy(ui.stop, async () => {
+    render(await post("/api/stop"));
+    loadContinue();
+  })
+);
 
 // --- ustawienia -----------------------------------------------------------
 
 const LOCAL_KEY = "ani-web-settings";
 
-function readLocal() {
-  try {
-    return JSON.parse(localStorage.getItem(LOCAL_KEY)) || {};
-  } catch {
-    return {};
-  }
-}
-
 function applySettings(settings) {
   if (settings.quality) {
-    ui.quality.value = settings.quality;
+    defaultQuality = settings.quality;
     ui.setQuality.value = settings.quality;
-  }
-  if (settings.episode) {
-    ui.episode.value = settings.episode;
-    ui.setEpisodeStep.value = settings.episode;
+    ui.detailQuality.value = settings.quality;
   }
 }
 
 async function loadSettings() {
   // localStorage od razu, backend nadpisuje gdy odpowie — UI nie czeka na siec.
-  applySettings(readLocal());
+  try {
+    applySettings(JSON.parse(localStorage.getItem(LOCAL_KEY)) || {});
+  } catch {
+    /* uszkodzony wpis nie moze zablokowac startu */
+  }
   try {
     applySettings(await api("/api/settings"));
   } catch {
-    // Ustawienia to nie funkcja krytyczna; brak backendu nie blokuje UI.
+    /* ustawienia to nie funkcja krytyczna */
   }
 }
 
-ui.settingsSave.addEventListener("click", async () => {
-  const settings = {
-    quality: ui.setQuality.value,
-    episode: Number(ui.setEpisodeStep.value) || 1,
-  };
-  localStorage.setItem(LOCAL_KEY, JSON.stringify(settings));
-  applySettings(settings);
-  ui.settingsHint.textContent = "Zapisano lokalnie…";
-  try {
+ui.settingsSave.addEventListener("click", () =>
+  withBusy(ui.settingsSave, async () => {
+    const settings = { quality: ui.setQuality.value };
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(settings));
+    applySettings(settings);
+    ui.settingsHint.textContent = "Zapisano lokalnie…";
     await post("/api/settings", settings);
     ui.settingsHint.textContent = "Zapisano.";
-  } catch (err) {
-    ui.settingsHint.textContent = `Zapisano lokalnie, backend odmówił: ${err.message}`;
-  }
-});
+  })
+);
 
 // --- strumien zdarzen -----------------------------------------------------
 
@@ -277,18 +477,19 @@ function connectEvents() {
   events.addEventListener("error", () => {
     // EventSource sam wznawia; pokazujemy tylko, ze stan jest nieaktualny.
     ui.stateDot.dataset.state = "offline";
-    ui.state.textContent = STATE_LABELS.offline;
   });
 }
 
 // --- start ----------------------------------------------------------------
 
 (async function start() {
+  show("home");
   try {
     render(await api("/api/status"));
   } catch (err) {
     showError(`Backend nie odpowiada: ${err.message}`);
   }
   await loadSettings();
+  await loadContinue();
   connectEvents();
 })();

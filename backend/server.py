@@ -16,6 +16,10 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 
 from ani_runner import AniCliSource, SourceError
 from config import ROOT_DIR, data_path, load_config
+from db import init_schema
+from history import HistoryStore
+from mapping import LazyMapper
+from metadata import MetadataError, MetadataService
 from players import BACKENDS, PlayerError, select_backend
 from state import AppState, SettingsStore
 
@@ -69,7 +73,7 @@ def _request_json():
 # --- fabryka --------------------------------------------------------------
 
 
-def create_app(config=None, player=None, source=None, settings=None):
+def create_app(config=None, player=None, source=None, settings=None, metadata=None, history=None):
     """Fabryka aplikacji. Wszystkie zaleznosci wstrzykiwalne — pod testy."""
     config = config if config is not None else load_config()
 
@@ -84,7 +88,14 @@ def create_app(config=None, player=None, source=None, settings=None):
     if settings is None:
         settings = SettingsStore(data_path(config, "settings", "settings.json"))
 
-    state = AppState(player, source)
+    if metadata is None or history is None:
+        db_path = data_path(config, "aniweb.sqlite3")
+        init_schema(db_path)
+        metadata = metadata if metadata is not None else MetadataService(db_path)
+        history = history if history is not None else HistoryStore(db_path)
+
+    mapper = LazyMapper(source, metadata)
+    state = AppState(player, source, mapper=mapper)
 
     app = Flask(__name__, static_folder=None)
     app.config["ANI_WEB"] = {
@@ -92,6 +103,9 @@ def create_app(config=None, player=None, source=None, settings=None):
         "state": state,
         "settings": settings,
         "source": source,
+        "metadata": metadata,
+        "history": history,
+        "mapper": mapper,
     }
 
     # --- frontend ---------------------------------------------------------
@@ -134,17 +148,37 @@ def create_app(config=None, player=None, source=None, settings=None):
     def api_play():
         data = _request_json()
         query = (data.get("query") or "").strip()
-        if not query:
-            return _json({"error": "Brak pola 'query'", "kind": "request"}, 400)
+        anilist_id = data.get("anilist_id")
 
-        return _json(
-            state.play(
-                query,
-                episode=int(data.get("episode", 1)),
-                quality=data.get("quality") or config["quality"],
-                position=int(data.get("position", 0)),
-            )
+        if not query and anilist_id is None:
+            return _json({"error": "Podaj 'query' albo 'anilist_id'", "kind": "request"}, 400)
+
+        uid = _current_uid()
+        episode = int(data.get("episode", 1))
+        snapshot = state.play(
+            query=query or None,
+            anilist_id=None if anilist_id is None else int(anilist_id),
+            episode=episode,
+            quality=data.get("quality") or config["quality"],
+            position=int(data.get("position", 0)),
         )
+
+        current = snapshot.get("current") or {}
+        if current.get("anilist_id"):
+            previous = history.entry(uid, current["anilist_id"])
+            history.record(
+                uid,
+                current["anilist_id"],
+                episode,
+                title=current.get("title"),
+                cover=current.get("cover"),
+            )
+            # Zmiana odcinka zeruje pozycje — inaczej wznawianie skakaloby w nowym
+            # odcinku do czasu ze starego.
+            if previous and previous["episode"] != episode:
+                history.clear_position(uid, current["anilist_id"])
+
+        return _json(snapshot, uid=uid)
 
     @app.post("/api/pause")
     def api_pause():
@@ -152,7 +186,24 @@ def create_app(config=None, player=None, source=None, settings=None):
 
     @app.post("/api/stop")
     def api_stop():
-        return _json(state.stop())
+        uid = _current_uid()
+        # Pozycje trzeba odczytac PRZED stop() — potem odtwarzacz jej nie zna.
+        before = state.as_dict()
+        current = before.get("current") or {}
+        snapshot = state.stop()
+
+        if current.get("anilist_id") and before.get("position") is not None:
+            history.record(
+                uid,
+                current["anilist_id"],
+                current.get("episode", 1),
+                position=before.get("position"),
+                duration=before.get("duration"),
+                title=current.get("title"),
+                cover=current.get("cover"),
+            )
+
+        return _json(snapshot, uid=uid)
 
     @app.get("/api/settings")
     def api_settings_get():
@@ -168,11 +219,43 @@ def create_app(config=None, player=None, source=None, settings=None):
         return _json(settings.update(uid, data), uid=uid)
 
     @app.get("/api/anime")
-    def api_anime():
+    def api_anime_search():
+        query = (request.args.get("q") or "").strip()
+        if not query:
+            return _json({"error": "Brak parametru 'q'", "kind": "request"}, 400)
+        limit = max(1, min(int(request.args.get("limit", 20)), 50))
+        results = metadata.search(query, limit=limit)
+        return _json({"query": query, "results": [m.as_dict() for m in results]})
+
+    @app.get("/api/anime/<int:anilist_id>")
+    def api_anime_details(anilist_id):
+        uid = _current_uid()
+        meta = metadata.details(anilist_id)
+        payload = meta.as_dict()
+        # Szczegoly od razu mowia, od czego kontynuowac — jedno zapytanie mniej z UI.
+        payload["resume"] = history.resume(uid, anilist_id, total_episodes=meta.episodes)
+        return _json(payload, uid=uid)
+
+    @app.get("/api/history")
+    def api_history():
+        uid = _current_uid()
+        limit = max(1, min(int(request.args.get("limit", 20)), 50))
+        return _json({"entries": history.recent(uid, limit=limit)}, uid=uid)
+
+    @app.get("/api/history/<int:anilist_id>")
+    def api_history_entry(anilist_id):
+        uid = _current_uid()
+        entry = history.entry(uid, anilist_id)
         return _json(
-            {"error": "Katalog nie jest jeszcze zaimplementowany (Stage 1)", "kind": "todo"},
-            501,
+            {"entry": entry, "resume": history.resume(uid, anilist_id)},
+            uid=uid,
         )
+
+    @app.delete("/api/history/<int:anilist_id>")
+    def api_history_delete(anilist_id):
+        uid = _current_uid()
+        removed = history.delete(uid, anilist_id)
+        return _json({"deleted": removed}, 200 if removed else 404, uid=uid)
 
     # --- bledy ------------------------------------------------------------
 
@@ -182,6 +265,12 @@ def create_app(config=None, player=None, source=None, settings=None):
     @app.errorhandler(SourceError)
     def handle_source_error(exc):
         return _json({"error": str(exc), "kind": "source"}, 502)
+
+    @app.errorhandler(MetadataError)
+    def handle_metadata_error(exc):
+        # Katalog padl, ale odtwarzanie po tytule wprost nadal dziala — dlatego
+        # osobny "kind", zeby UI mogl to powiedziec zamiast udawac awarie calosci.
+        return _json({"error": str(exc), "kind": "catalogue"}, 502)
 
     @app.errorhandler(PlayerError)
     def handle_player_error(exc):
