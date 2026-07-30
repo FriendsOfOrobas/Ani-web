@@ -23,7 +23,17 @@ class HistoryStore:
     def __init__(self, db_path):
         self.db_path = db_path
 
-    def record(self, uid, anilist_id, episode, position=None, duration=None, title=None, cover=None):
+    def record(
+        self,
+        uid,
+        anilist_id,
+        episode,
+        position=None,
+        duration=None,
+        title=None,
+        cover=None,
+        completed=None,
+    ):
         """Zapisuje postep. Pola opcjonalne nie nadpisuja istniejacych wartosci.
 
         COALESCE na excluded.* jest tu celowo: `stop` z backendu bez pozycji nie
@@ -33,14 +43,15 @@ class HistoryStore:
             connection.execute(
                 """
                 INSERT INTO history (uid, anilist_id, episode, position, duration,
-                                     title, cover, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                     title, cover, completed, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(uid, anilist_id) DO UPDATE SET
                     episode    = excluded.episode,
                     position   = COALESCE(excluded.position, history.position),
                     duration   = COALESCE(excluded.duration, history.duration),
                     title      = COALESCE(excluded.title, history.title),
                     cover      = COALESCE(excluded.cover, history.cover),
+                    completed  = COALESCE(excluded.completed, history.completed),
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -51,17 +62,34 @@ class HistoryStore:
                     None if duration is None else int(duration),
                     title,
                     cover,
+                    None if completed is None else int(bool(completed)),
                     now(),
                 ),
             )
         return self.entry(uid, anilist_id)
 
+    def mark_completed(self, uid, anilist_id, episode, position=None, duration=None):
+        """Odcinek dogral sie do konca.
+
+        Wolane przez dozorce stanu, gdy odtwarzacz przeszedl z grania w koniec.
+        Dziala takze dla backendow bez pozycji — one wiedza, ze sie skonczylo,
+        tylko nie wiedza, na ktorej sekundzie.
+        """
+        return self.record(
+            uid,
+            anilist_id,
+            episode,
+            position=position,
+            duration=duration,
+            completed=True,
+        )
+
     def clear_position(self, uid, anilist_id):
         """Nowy odcinek zaczyna sie od zera — stara pozycja nie moze zostac."""
         with transaction(self.db_path) as connection:
             connection.execute(
-                "UPDATE history SET position = NULL, duration = NULL, updated_at = ? "
-                "WHERE uid = ? AND anilist_id = ?",
+                "UPDATE history SET position = NULL, duration = NULL, completed = 0, "
+                "updated_at = ? WHERE uid = ? AND anilist_id = ?",
                 (now(), uid, int(anilist_id)),
             )
 
@@ -98,7 +126,11 @@ class HistoryStore:
         position = entry["position"] or 0
         duration = entry["duration"] or 0
 
-        finished = duration and position >= duration - END_MARGIN_SECONDS
+        # Dwie drogi do "dokonczone": jawna flaga od dozorcy (dziala dla kazdego
+        # backendu) albo pozycja blisko konca (tylko gdy znamy czas).
+        finished = bool(entry["completed"]) or (
+            duration and position >= duration - END_MARGIN_SECONDS
+        )
         if finished:
             has_next = not total_episodes or episode < total_episodes
             if has_next:

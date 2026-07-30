@@ -8,7 +8,7 @@ Stack jest celowo chudy: czysty HTML + CSS + JS bez frameworka, Python z jedną
 zależnością (Flask), SQLite na cache i historię.
 
 - **[docs.md](docs.md)** — architektura, logika działania, **rejestr decyzji**
-  (D1–D8) i plan etapów. Zacznij tam, jeśli chcesz zrozumieć *dlaczego*.
+  (D1–D10) i plan etapów. Zacznij tam, jeśli chcesz zrozumieć *dlaczego*.
 - **[deployment.md](deployment.md)** — instalacja pod Termuksa i Android TV.
 - **[research-android-control.md](research-android-control.md)** — research
   techniczny, na którym oparte są decyzje.
@@ -21,7 +21,12 @@ zależnością (Flask), SQLite na cache i historię.
 | Stage 0 | ani-cli → URL → odtwarzacz, status po SSE | **działa** |
 | Stage 1 | katalog: szukanie, opisy, okładki, cache | **działa** |
 | Stage 3 | historia i wznawianie odcinka | **działa** |
-| Stage 2 | kanał kontrolny przez self-adb (pauza/stan na Androidzie) | **zablokowany** — patrz docs.md D6 |
+| Stage 2 | kanał kontrolny przez self-adb (pauza/stan na Androidzie) | napisany, **niezweryfikowany na sprzęcie** — docs.md D10 |
+
+Koniec odcinka i zamknięcie odtwarzacza są wykrywane same, bez klikania —
+osobny wątek dozorujący pilnuje stanu i pushuje go przez SSE (docs.md D9).
+Po odcinku UI pyta o następny, jak menu ani-cli; autoplay jest opcją
+w ustawieniach, domyślnie wyłączoną.
 
 Odtwarzacze (`PlayerBackend`) — każdy deklaruje swoje `capabilities`, a UI chowa
 kontrolki, których dany backend nie obsługuje:
@@ -30,8 +35,8 @@ kontrolki, których dany backend nie obsługuje:
 |---|---|---|---|---|
 | `simulated` | nic | ✅ | ❌ | działa — do klikania UI i do testów |
 | `ani-cli` | ani-cli sam odpala odtwarzacz | ❌ | ❌ | działa |
-| `mpv-ipc` | mpv + socket JSON IPC | ✅ | ✅ | **niesprawdzone z prawdziwym mpv** |
-| `android-intent` | `am start` do mpv-android/VLC | ✅ | ❌ | szkielet, Stage 2 |
+| `mpv-ipc` | mpv + socket JSON IPC | ✅ | ✅ | działa; protokół IPC pokryty testami |
+| `android-intent` | `am start` do mpv-android/VLC | ✅ przez adb | ⚠️ zgrubna | **niezweryfikowany na sprzęcie** |
 
 ## Uruchomienie na Linuksie
 
@@ -154,7 +159,8 @@ postępu.
 ---
 
 **Pytania i decyzje „co do większego obrazu" dopisuj tutaj albo do rejestru
-decyzji w docs.md §11.** Otwarte na teraz (D6, blokują Stage 2):
+decyzji w docs.md §11.** Otwarte na teraz (D6) — Stage 2 jest już napisany,
+ale bez odpowiedzi na te pytania nie da się go zweryfikować ani dobrać wariantu:
 
 1. Który konkretnie box i wersja Androida?
 2. Czy urządzenie jest zrootowane? Jeśli tak, docs.md §2 przestaje obowiązywać.

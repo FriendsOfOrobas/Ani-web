@@ -55,6 +55,10 @@ class AppState:
         self.mapper = mapper
         self.current = None
         self.last_error = None
+        # Kto uruchomil to odtwarzanie. Dozorca stanu dziala w watku bez kontekstu
+        # zadania HTTP, a musi wiedziec, do czyjej historii zapisac koniec odcinka.
+        # Swiadomie NIE trafia do as_dict() — to nie jest dana dla klienta.
+        self.owner_uid = None
         self._subscribers = []
         self._lock = threading.Lock()
 

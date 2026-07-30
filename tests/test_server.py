@@ -24,6 +24,7 @@ CONFIG = {
     "mpv_command": "mpv",
     "mpv_ipc_socket": "",
     "adb_command": "adb",
+    "watch_interval": 2.0,
     "android_player_package": "is.xyz.mpv",
     "data_dir": "data",
 }

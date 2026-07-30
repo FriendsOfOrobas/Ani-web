@@ -52,6 +52,15 @@ const ui = {
   directPlay: el("direct-play"),
   capabilities: el("capabilities"),
 
+  endedPrompt: el("ended-prompt"),
+  endedTitle: el("ended-title"),
+  endedSub: el("ended-sub"),
+  endedNext: el("ended-next"),
+  endedReplay: el("ended-replay"),
+  endedClose: el("ended-close"),
+
+  setAutoplay: el("set-autoplay"),
+
   nowbar: el("nowbar"),
   stateDot: el("state-dot"),
   nowTitle: el("now-title"),
@@ -68,6 +77,7 @@ const STATE_LABELS = {
   ended: "koniec",
   unknown: "nieznany",
   offline: "brak połączenia",
+  starting: "uruchamianie…",
 };
 
 const CAPABILITY_LABELS = {
@@ -92,6 +102,16 @@ const FORMAT_LABELS = {
 let capabilities = {};
 let currentDetail = null;
 let defaultQuality = "1080";
+let autoplayNext = false;
+// Ostatnio odtwarzane — pytanie po odcinku musi wiedziec, co wlaczyc dalej,
+// a `current` jest wtedy juz wyczyszczone przez backend.
+let lastPlayed = null;
+let lastState = null;
+// Zatrzymanie przez uzytkownika NIE moze wywolac pytania "nastepny odcinek?".
+let userStopped = false;
+
+const ACTIVE_STATES = new Set(["playing", "paused", "starting"]);
+const FINISHED_STATES = new Set(["ended", "idle", "stopped"]);
 
 // --- pomocnicze -----------------------------------------------------------
 
@@ -295,18 +315,38 @@ async function openDetail(anilistId) {
   }
 }
 
+async function playEpisode({ anilistId, episode, quality, position = 0, title, totalEpisodes }) {
+  const snapshot = await post("/api/play", {
+    anilist_id: anilistId,
+    episode,
+    quality: quality || defaultQuality,
+    position,
+  });
+  lastPlayed = {
+    anilistId,
+    episode,
+    quality: quality || defaultQuality,
+    title: title || snapshot.current?.title || "",
+    totalEpisodes: totalEpisodes || snapshot.current?.total_episodes || 0,
+  };
+  hideEndedPrompt();
+  render(snapshot);
+  loadContinue();
+  return snapshot;
+}
+
 ui.detailPlay.addEventListener("click", () =>
   withBusy(ui.detailPlay, async () => {
     if (!currentDetail) return;
     ui.detailPlay.textContent = "Szukam źródła…";
-    const snapshot = await post("/api/play", {
-      anilist_id: currentDetail.anilist_id,
+    await playEpisode({
+      anilistId: currentDetail.anilist_id,
       episode: Number(ui.detailEpisode.value) || 1,
       quality: ui.detailQuality.value,
       position: Number(currentDetail.resume?.position || 0),
+      title: currentDetail.title,
+      totalEpisodes: currentDetail.episodes,
     });
-    render(snapshot);
-    loadContinue();
   })
 );
 
@@ -366,6 +406,58 @@ ui.directPlay.addEventListener("click", () =>
   })
 );
 
+// --- pytanie po odcinku (odpowiednik menu ani-cli) ------------------------
+
+function hideEndedPrompt() {
+  ui.endedPrompt.hidden = true;
+}
+
+function showEndedPrompt(finished) {
+  if (!lastPlayed) return;
+
+  const last = lastPlayed.totalEpisodes && lastPlayed.episode >= lastPlayed.totalEpisodes;
+  ui.endedTitle.textContent = finished
+    ? `Odcinek ${lastPlayed.episode} skończony`
+    : "Odtwarzacz zamknięty";
+  ui.endedSub.textContent = last
+    ? `${lastPlayed.title} — to był ostatni odcinek.`
+    : `${lastPlayed.title} — następny: ${lastPlayed.episode + 1}.`;
+  ui.endedNext.hidden = Boolean(last);
+  ui.endedPrompt.hidden = false;
+
+  // Autoplay jest opcja, nie domyslna: przy zamknieciu odtwarzacza z pilota
+  // automatyczne wlaczanie kolejnego odcinka byloby wbrew intencji.
+  if (autoplayNext && finished && !last) {
+    playNext().catch((err) => showError(err.message));
+  }
+}
+
+function playNext() {
+  return playEpisode({
+    anilistId: lastPlayed.anilistId,
+    episode: lastPlayed.episode + 1,
+    quality: lastPlayed.quality,
+    title: lastPlayed.title,
+    totalEpisodes: lastPlayed.totalEpisodes,
+  });
+}
+
+ui.endedNext.addEventListener("click", () => withBusy(ui.endedNext, playNext));
+
+ui.endedReplay.addEventListener("click", () =>
+  withBusy(ui.endedReplay, () =>
+    playEpisode({
+      anilistId: lastPlayed.anilistId,
+      episode: lastPlayed.episode,
+      quality: lastPlayed.quality,
+      title: lastPlayed.title,
+      totalEpisodes: lastPlayed.totalEpisodes,
+    })
+  )
+);
+
+ui.endedClose.addEventListener("click", hideEndedPrompt);
+
 // --- pasek odtwarzania ----------------------------------------------------
 
 function applyCapabilities(caps) {
@@ -394,6 +486,18 @@ function render(data) {
   const state = data.state || "unknown";
   const current = data.current;
 
+  // Przejscie z grania w koniec = odcinek sie skonczyl albo odtwarzacz zamknieto.
+  // Backend zglasza to sam, z watku dozorujacego — nie trzeba nic klikac.
+  const previousState = lastState;
+  lastState = state;
+  if (ACTIVE_STATES.has(previousState) && FINISHED_STATES.has(state)) {
+    if (userStopped) {
+      userStopped = false;
+    } else {
+      showEndedPrompt(state === "ended");
+    }
+  }
+
   ui.stateDot.dataset.state = state;
   ui.nowbar.hidden = !current && state !== "playing" && state !== "paused";
 
@@ -419,6 +523,8 @@ ui.pause.addEventListener("click", () =>
 
 ui.stop.addEventListener("click", () =>
   withBusy(ui.stop, async () => {
+    userStopped = true;
+    hideEndedPrompt();
     render(await post("/api/stop"));
     loadContinue();
   })
@@ -433,6 +539,10 @@ function applySettings(settings) {
     defaultQuality = settings.quality;
     ui.setQuality.value = settings.quality;
     ui.detailQuality.value = settings.quality;
+  }
+  if (settings.autoplay_next !== undefined) {
+    autoplayNext = Boolean(settings.autoplay_next);
+    ui.setAutoplay.checked = autoplayNext;
   }
 }
 
@@ -452,7 +562,10 @@ async function loadSettings() {
 
 ui.settingsSave.addEventListener("click", () =>
   withBusy(ui.settingsSave, async () => {
-    const settings = { quality: ui.setQuality.value };
+    const settings = {
+      quality: ui.setQuality.value,
+      autoplay_next: ui.setAutoplay.checked,
+    };
     localStorage.setItem(LOCAL_KEY, JSON.stringify(settings));
     applySettings(settings);
     ui.settingsHint.textContent = "Zapisano lokalnie…";

@@ -85,6 +85,15 @@
             <option value="480">480p</option>
             <option value="360">360p</option>
           </select>
+
+          <label class="checkline">
+            <input id="set-autoplay" type="checkbox" />
+            <span>Włączaj następny odcinek automatycznie</span>
+          </label>
+          <p class="hint">
+            Wyłączone: po odcinku pojawia się pytanie, tak jak w menu ani-cli.
+          </p>
+
           <button id="settings-save" class="primary" type="button">Zapisz</button>
           <p id="settings-hint" class="hint"></p>
         </div>
@@ -112,6 +121,22 @@
         </div>
       </section>
     </main>
+
+    <!--
+      Po odcinku: odpowiednik menu ani-cli. Pojawia sie, gdy dozorca stanu
+      wykryje, ze odtwarzacz skonczyl albo zostal zamkniety.
+    -->
+    <div id="ended-prompt" class="ended-prompt" role="status" hidden>
+      <div class="ended-text">
+        <strong id="ended-title">Odcinek skończony</strong>
+        <small id="ended-sub"></small>
+      </div>
+      <div class="ended-actions">
+        <button id="ended-next" class="primary compact" type="button">Następny</button>
+        <button id="ended-replay" type="button">Znowu</button>
+        <button id="ended-close" class="ghost" type="button" aria-label="Zamknij">✕</button>
+      </div>
+    </div>
 
     <!-- pasek odtwarzania, widoczny na kazdym ekranie gdy cos leci -->
     <footer id="nowbar" class="nowbar" hidden>

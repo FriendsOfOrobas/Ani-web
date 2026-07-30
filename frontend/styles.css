@@ -1,25 +1,39 @@
 /* Mobile-first. Telefon jest pilotem, wiec cele dotykowe >= 44px. */
 
 :root {
-  --bg: #14161a;
-  --card: #1d2026;
-  --line: #2c313a;
-  --text: #e8eaed;
-  --muted: #9aa2ae;
-  --accent: #5b8cff;
-  --ok: #3fbf7f;
-  --warn: #e0b341;
-  --err: #e2554f;
-  --radius: 12px;
+  --bg: #0f1116;
+  --bg-elevated: #161a21;
+  --card: #1a1f27;
+  --card-hover: #202632;
+  --line: #262d38;
+  --text: #e9ecf1;
+  --muted: #8e97a6;
+  --accent: #6d8dff;
+  --accent-strong: #8aa4ff;
+  --accent-dim: rgba(109, 141, 255, 0.14);
+  --ok: #45c98a;
+  --warn: #e5b84c;
+  --err: #ec5f57;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  --shadow-soft: 0 2px 10px rgba(0, 0, 0, 0.25);
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f4f5f7;
+    --bg: #f2f4f8;
+    --bg-elevated: #ffffff;
     --card: #ffffff;
-    --line: #dcdfe4;
-    --text: #1a1c20;
-    --muted: #5f6672;
+    --card-hover: #f7f9fc;
+    --line: #dde2ea;
+    --text: #161a21;
+    --muted: #626b7a;
+    --accent: #3f63e0;
+    --accent-strong: #2f4fc4;
+    --accent-dim: rgba(63, 99, 224, 0.1);
+    --shadow: 0 8px 28px rgba(20, 30, 60, 0.12);
+    --shadow-soft: 0 1px 6px rgba(20, 30, 60, 0.08);
   }
 }
 
@@ -41,17 +55,30 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 0;
+  padding: 0.85rem 1rem;
+  margin: 0 -1rem 0.5rem;
   position: sticky;
   top: 0;
-  background: var(--bg);
-  z-index: 1;
+  z-index: 5;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
 }
 
 .topbar h1 {
   margin: 0;
-  font-size: 1.25rem;
-  letter-spacing: 0.02em;
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  /* Tytul zostaje wysrodkowany, mimo ze przyciski po bokach maja rozne szerokosci. */
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.topbar > :last-child {
+  margin-left: auto;
 }
 
 main {
@@ -63,8 +90,9 @@ main {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 1rem;
+  padding: 1.1rem;
   margin-bottom: 1rem;
+  box-shadow: var(--shadow-soft);
 }
 
 .card h2 {
@@ -86,13 +114,25 @@ label:not(:first-child) {
 input,
 select {
   width: 100%;
-  min-height: 44px;
-  padding: 0 0.75rem;
-  background: var(--bg);
+  min-height: 46px;
+  padding: 0 0.8rem;
+  background: var(--bg-elevated);
   color: var(--text);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   font-size: 1rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+input:focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+  outline: none;
+}
+
+input::placeholder {
+  color: var(--muted);
 }
 
 input:focus-visible,
@@ -120,15 +160,22 @@ button {
   min-height: 48px;
   padding: 0 1.1rem;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
   color: var(--text);
-  font-size: 1rem;
+  font-size: 0.95rem;
+  font-weight: 500;
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
 }
 
-button:active {
-  transform: translateY(1px);
+button:hover:not([disabled]) {
+  background: var(--card-hover);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+button:active:not([disabled]) {
+  transform: scale(0.985);
 }
 
 button[disabled] {
@@ -143,6 +190,12 @@ button.primary {
   border-color: var(--accent);
   color: #fff;
   font-weight: 600;
+  box-shadow: 0 2px 12px var(--accent-dim);
+}
+
+button.primary:hover:not([disabled]) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
 button.ghost {
@@ -185,6 +238,21 @@ button.ghost {
 
 .dot[data-state="playing"] {
   background: var(--ok);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.dot[data-state="starting"] {
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot { animation: none !important; }
+  * { transition: none !important; }
 }
 
 .dot[data-state="paused"] {
@@ -225,10 +293,11 @@ button.ghost {
 .error {
   max-width: 32rem;
   margin: 0 auto 1rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--err);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--err) 15%, transparent);
+  padding: 0.8rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--err) 55%, transparent);
+  border-left: 3px solid var(--err);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--err) 12%, var(--card));
   color: var(--text);
   font-size: 0.9rem;
 }
@@ -318,9 +387,16 @@ button.compact {
   width: 100%;
   aspect-ratio: 2 / 3;
   object-fit: cover;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--card);
   border: 1px solid var(--line);
+  box-shadow: var(--shadow-soft);
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.card-button:hover img {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow);
 }
 
 .cover-placeholder {
@@ -331,7 +407,17 @@ button.compact {
 }
 
 .card-button:active img {
-  opacity: 0.75;
+  transform: scale(0.97);
+}
+
+.card-button:focus-visible {
+  outline: none;
+}
+
+.card-button:focus-visible img,
+.card-button:focus-visible .cover-placeholder {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 .card-caption {
@@ -414,9 +500,11 @@ button.danger {
   max-width: 32rem;
   margin: 1rem auto 0;
   padding: 0.7rem 0.85rem;
-  background: var(--card);
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  backdrop-filter: blur(10px);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
 .nowbar-info {
@@ -454,4 +542,95 @@ button.danger {
   min-height: 40px;
   padding: 0 0.8rem;
   font-size: 0.9rem;
+}
+
+/* --- pole wyboru w ustawieniach --- */
+
+.checkline {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  color: var(--text);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.checkline input {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  flex: none;
+  accent-color: var(--accent);
+}
+
+/* --- pytanie po odcinku (odpowiednik menu ani-cli) --- */
+
+.ended-prompt {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  max-width: 32rem;
+  margin: 1rem auto 0;
+  padding: 0.8rem 0.9rem;
+  background: color-mix(in srgb, var(--accent) 16%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  animation: rise 0.22s ease-out;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+}
+
+.ended-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ended-text strong {
+  font-size: 0.92rem;
+}
+
+.ended-text small {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ended-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: none;
+}
+
+.ended-actions button {
+  min-height: 40px;
+  padding: 0 0.8rem;
+  font-size: 0.88rem;
+}
+
+.ended-actions .ghost {
+  min-width: 40px;
+  padding: 0 0.5rem;
+}
+
+/* Na waskich telefonach pytanie po odcinku lamie sie na dwa wiersze. */
+@media (max-width: 26rem) {
+  .ended-prompt {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ended-actions button:not(.ghost) {
+    flex: 1;
+  }
 }

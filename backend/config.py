@@ -26,17 +26,23 @@ DEFAULTS = {
     "mpv_command": "mpv",
     "mpv_ipc_socket": "",
     "adb_command": "adb",
+    # Jak czesto dozorca odpytuje odtwarzacz. Kompromis: koniec odcinka
+    # wykryty od razu, a urzadzenie TV nie zarzynane odpytywaniem po adb.
+    "watch_interval": 2.0,
     "android_player_package": "is.xyz.mpv",
     "data_dir": "data",
 }
 
 ENV_PREFIX = "ANI_WEB_"
 _INT_KEYS = {"port"}
+_FLOAT_KEYS = {"watch_interval"}
 
 
 def _coerce(key, value):
     if key in _INT_KEYS:
         return int(value)
+    if key in _FLOAT_KEYS:
+        return float(value)
     return value
 
 
@@ -66,6 +72,7 @@ def load_config(backend_dir=None, environ=None):
     config.update(_env_overrides(environ))
 
     config["port"] = int(config["port"])
+    config["watch_interval"] = float(config["watch_interval"])
     return config
 
 

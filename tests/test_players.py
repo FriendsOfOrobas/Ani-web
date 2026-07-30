@@ -2,6 +2,7 @@ import json
 import os
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -16,6 +17,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 from players import (
     BACKENDS,
     AndroidIntentPlayer,
+    parse_media_session,
     AniCliPlayer,
     Capabilities,
     MpvIpcPlayer,
@@ -367,10 +369,176 @@ class SelectBackendTests(unittest.TestCase):
         self.assertIsInstance(player, AndroidIntentPlayer)
         self.assertEqual(player.package, "org.videolan.vlc")
 
-    def test_android_backend_is_still_a_stub(self):
-        # Stage 0/2 — dopoki nie wiemy, jaki to box (docs.md D6).
-        with self.assertRaises(NotImplementedError):
-            AndroidIntentPlayer().play("http://x/y.mp4")
+
+DUMPSYS_PLAYING = """Media session state:
+Sessions Stack - have 2 sessions:
+  package=is.xyz.mpv
+  mediaSession=android.media.session.ISessionController$Stub$Proxy@abc
+  state=PlaybackState {state=3, position=124500, buffered position=0, speed=1.0, updated=99, actions=822, duration=1420000}
+  package=com.spotify.music
+  state=PlaybackState {state=2, position=5000, duration=200000}
+"""
+
+DUMPSYS_EMPTY = "Media session state:\nSessions Stack - have 0 sessions:\n"
+
+
+class FakeAdb:
+    """Udaje `am` i `adb shell` — Stage 2 bez Androida."""
+
+    def __init__(self, dumpsys=DUMPSYS_PLAYING, adb_ok=True, am_returncode=0):
+        self.dumpsys = dumpsys
+        self.adb_ok = adb_ok
+        self.am_returncode = am_returncode
+        self.calls = []
+
+    def __call__(self, command, timeout=None):
+        self.calls.append(list(command))
+        result = subprocess.CompletedProcess(command, 0, "", "")
+        if command[:2] == ["adb", "get-state"]:
+            result.stdout = "device\n" if self.adb_ok else ""
+            result.returncode = 0 if self.adb_ok else 1
+        elif "dumpsys" in command:
+            result.stdout = self.dumpsys
+        elif command[:2] == ["am", "start"]:
+            result.returncode = self.am_returncode
+            if self.am_returncode:
+                result.stderr = "Error: Activity not started"
+        return result
+
+    def shell_calls(self):
+        return [c for c in self.calls if c[:2] == [self.calls[0][0], "shell"]] if self.calls else []
+
+
+class MediaSessionParsingTests(unittest.TestCase):
+    def test_parses_state_position_and_duration(self):
+        parsed = parse_media_session(DUMPSYS_PLAYING, "is.xyz.mpv")
+        self.assertEqual(parsed, {"state": "playing", "position": 124, "duration": 1420})
+
+    def test_buffered_position_does_not_shadow_real_position(self):
+        # dumpsys zawiera i "position=124500", i "buffered position=0" — naiwne
+        # parsowanie nadpisywalo prawdziwa pozycje zerem.
+        self.assertEqual(parse_media_session(DUMPSYS_PLAYING, "is.xyz.mpv")["position"], 124)
+
+    def test_reads_the_right_package_block(self):
+        parsed = parse_media_session(DUMPSYS_PLAYING, "com.spotify.music")
+        self.assertEqual(parsed["state"], "paused")
+
+    def test_absent_package_means_no_session(self):
+        self.assertIsNone(parse_media_session(DUMPSYS_PLAYING, "org.videolan.vlc"))
+        self.assertIsNone(parse_media_session(DUMPSYS_EMPTY, "is.xyz.mpv"))
+
+    def test_buffering_counts_as_playing(self):
+        dump = "  package=p\n  state=PlaybackState {state=6, position=1000}\n"
+        self.assertEqual(parse_media_session(dump, "p")["state"], "playing")
+
+    def test_unparseable_block_is_unknown_not_a_crash(self):
+        dump = "  package=p\n  jakies inne smieci\n"
+        self.assertEqual(parse_media_session(dump, "p"), {"state": "unknown"})
+
+    def test_negative_position_is_dropped(self):
+        # PlaybackState podaje -1, gdy pozycja jest nieznana.
+        dump = "  package=p\n  state=PlaybackState {state=3, position=-1, duration=0}\n"
+        parsed = parse_media_session(dump, "p")
+        self.assertNotIn("position", parsed)
+        self.assertNotIn("duration", parsed)
+
+
+class AndroidIntentPlayerTests(unittest.TestCase):
+    def test_intent_targets_mpv_activity_by_default(self):
+        args = AndroidIntentPlayer()._intent_args("http://x/y.mp4", 0, "")
+        self.assertIn("-n", args)
+        self.assertIn("is.xyz.mpv/.MPVActivity", args)
+        self.assertIn("android.intent.action.VIEW", args)
+
+    def test_position_goes_in_extras_as_milliseconds(self):
+        args = AndroidIntentPlayer()._intent_args("http://x/y.mp4", 90, "")
+        self.assertIn("--ei", args)
+        self.assertIn("90000", args)
+
+    def test_unknown_package_falls_back_to_package_targeting(self):
+        args = AndroidIntentPlayer(package="com.inny.player")._intent_args("u", 0, "")
+        self.assertIn("-p", args)
+        self.assertIn("com.inny.player", args)
+
+    def test_vlc_has_its_own_activity(self):
+        args = AndroidIntentPlayer(package="org.videolan.vlc")._intent_args("u", 0, "")
+        self.assertIn("org.videolan.vlc/.gui.video.VideoPlayerActivity", args)
+
+    def test_play_runs_am_start(self):
+        adb = FakeAdb()
+        AndroidIntentPlayer(runner=adb).play("http://x/y.mp4")
+        self.assertEqual(adb.calls[0][:2], ["am", "start"])
+
+    def test_failed_am_start_points_at_the_overlay_permission(self):
+        # Najczestsza przyczyna na Androidzie 10+ — docs.md §10.
+        adb = FakeAdb(am_returncode=1)
+        with self.assertRaises(PlayerError) as ctx:
+            AndroidIntentPlayer(runner=adb).play("http://x/y.mp4")
+        self.assertIn("Draw over other apps", str(ctx.exception))
+
+    def test_status_reports_position_from_dumpsys(self):
+        player = AndroidIntentPlayer(runner=FakeAdb())
+        player.play("http://x/y.mp4")
+        self.assertEqual(player.status()["position"], 124)
+
+    def test_missing_session_right_after_start_is_not_the_end(self):
+        # Odtwarzacz potrzebuje chwili na rejestracje sesji. Bez karencji dozorca
+        # oglaszalby koniec odcinka w sekundzie startu.
+        player = AndroidIntentPlayer(runner=FakeAdb(dumpsys=DUMPSYS_EMPTY))
+        self.assertEqual(player.play("http://x/y.mp4")["state"], "starting")
+
+    def test_missing_session_after_grace_means_player_was_closed(self):
+        player = AndroidIntentPlayer(runner=FakeAdb(dumpsys=DUMPSYS_EMPTY))
+        player.play("http://x/y.mp4")
+        player._started_at = time.monotonic() - player.SESSION_GRACE_SECONDS - 1
+        self.assertEqual(player.status()["state"], "ended")
+
+    def test_without_adb_capabilities_degrade_instead_of_lying(self):
+        player = AndroidIntentPlayer(runner=FakeAdb(adb_ok=False))
+        described = player.describe()
+        self.assertFalse(described["adb"])
+        self.assertFalse(described["capabilities"]["pause"])
+        self.assertTrue(described["capabilities"]["play"])
+
+    def test_without_adb_state_is_unknown_not_playing(self):
+        # Zeby dozorca nie zglosil falszywego konca odcinka.
+        player = AndroidIntentPlayer(runner=FakeAdb(adb_ok=False))
+        player.play("http://x/y.mp4")
+        self.assertEqual(player.status()["state"], "unknown")
+
+    def test_pause_without_adb_is_refused_with_a_reason(self):
+        player = AndroidIntentPlayer(runner=FakeAdb(adb_ok=False))
+        player.play("http://x/y.mp4")
+        with self.assertRaises(PlayerError) as ctx:
+            player.pause()
+        self.assertIn("self-adb", str(ctx.exception))
+
+    def test_pause_sends_the_media_keyevent(self):
+        adb = FakeAdb()
+        player = AndroidIntentPlayer(runner=adb)
+        player.play("http://x/y.mp4")
+        player.pause()
+        self.assertTrue(
+            any("keyevent" in c and str(player.KEYCODE_PLAY_PAUSE) in c for c in adb.calls)
+        )
+
+    def test_stop_force_stops_the_package(self):
+        adb = FakeAdb()
+        player = AndroidIntentPlayer(runner=adb)
+        player.play("http://x/y.mp4")
+        self.assertEqual(player.stop(), {"state": "stopped"})
+        self.assertIn(["am", "force-stop", "is.xyz.mpv"], adb.calls)
+
+    def test_headers_are_not_passed_through_the_intent(self):
+        # mpv-android ich nie przyjmuje (#427) — Referer dokleja proxy, docs.md §7.
+        adb = FakeAdb()
+        AndroidIntentPlayer(runner=adb).play("http://x/y.mp4", headers={"Referer": "https://r"})
+        self.assertNotIn("https://r", " ".join(adb.calls[0]))
+
+    def test_no_seek_method_exists(self):
+        # docs.md D2 — seek jest niedostepny i nie ma go udawac.
+        self.assertFalse(AndroidIntentPlayer.capabilities.seek)
+        self.assertFalse(hasattr(AndroidIntentPlayer, "seek"))
 
 
 if __name__ == "__main__":

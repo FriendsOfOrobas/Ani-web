@@ -40,12 +40,24 @@ CREATE TABLE IF NOT EXISTS history (
     duration    INTEGER,
     title       TEXT,
     cover       TEXT,
+    -- Odcinek dograny do konca. Osobno od position, bo backendy bez pozycji
+    -- (ani-cli, android-intent) i tak wiedza, ze odtwarzanie sie zakonczylo.
+    -- NULLowalne CELOWO: NULL znaczy "nie ruszaj tej kolumny" w UPSERT-cie
+    -- (COALESCE(excluded.completed, history.completed)). Z NOT NULL jawny NULL
+    -- lecialby bledem, a bez NULL-a kazdy zapis postepu gasilby flage.
+    completed   INTEGER DEFAULT 0,
     updated_at  REAL    NOT NULL,
     PRIMARY KEY (uid, anilist_id)
 );
 
 CREATE INDEX IF NOT EXISTS history_recent ON history (uid, updated_at DESC);
 """
+
+# Kolumny dodane po tym, jak ktos mogl miec juz baze. SQLite nie ma
+# "ADD COLUMN IF NOT EXISTS", wiec sprawdzamy sami.
+MIGRATIONS = [
+    ("history", "completed", "INTEGER DEFAULT 0"),
+]
 
 
 def connect(path):
@@ -75,6 +87,14 @@ def transaction(path):
 def init_schema(path):
     with transaction(path) as connection:
         connection.executescript(SCHEMA)
+        _apply_migrations(connection)
+
+
+def _apply_migrations(connection):
+    for table, column, definition in MIGRATIONS:
+        existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def now():

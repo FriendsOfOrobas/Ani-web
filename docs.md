@@ -73,10 +73,10 @@ pod nieistniejące możliwości.
 - status odtwarzania pushowany do telefonu przez SSE,
 - zapis ustawień (przeglądarka + backend).
 
-### Później
+### Później (kolejność zmieniona — patrz D8)
 - Stage 1: wyszukiwanie i katalog (AniList + cache SQLite),
-- Stage 2: kanał kontrolny (self-adb, play/pause/stop),
-- Stage 3: historia i wznawianie odcinka.
+- Stage 3: historia i wznawianie odcinka,
+- Stage 2: kanał kontrolny (self-adb, play/pause/stop) — ostatni, bo D6.
 
 ## 4. Architektura
 
@@ -111,11 +111,14 @@ Ani-Web/
     state.py         # AppState — stan aplikacji
     players.py       # PlayerBackend + implementacje
     ani_runner.py    # SourceProvider — adapter ani-cli
+    metadata.py      # katalog: AniList + Jikan + cache (Stage 1)
+    mapping.py       # leniwe mapowanie tytuł -> źródło (D7)
+    history.py       # historia i wznawianie (Stage 3)
+    watcher.py       # dozorca stanu odtwarzania (D9)
+    db.py            # schemat i połączenia SQLite
     config.py        # wczytywanie konfiguracji
     config.json      # domyślna konfiguracja
-  data/
-    cache/           # cache metadanych (gitignored)
-    settings/        # ustawienia i historia (gitignored)
+  data/              # cały katalog gitignored: baza, cache, ustawienia
   tests/
 ```
 
@@ -146,8 +149,9 @@ Ani-Web/
 - AniList GraphQL jako główne źródło (bez klucza, 90 req/min, pole `synonyms`),
 - Jikan v4 jako fallback (bez klucza, 60 req/min),
 - agresywny cache w SQLite — metadane są niemal statyczne,
-- mapowanie tytuł AniList → tytuł allanime przez `rapidfuzz`, z ręcznym
-  rozstrzyganiem w UI przy niskim score; potwierdzone mapowanie trafia do cache.
+- mapowanie tytuł AniList → tytuł allanime **leniwie, dopiero przy `play`**;
+  potwierdzone mapowanie trafia do cache. `rapidfuzz` okazał się niepotrzebny —
+  patrz D7.
 
 ### 5.5 Ustawienia i stan użytkownika
 - preferencje w `localStorage` + kopia po stronie backendu,
@@ -314,6 +318,41 @@ Linuksie). Dla `AniCliPlayer` i `AndroidIntentPlayer` historia zapisuje sam
 **numer odcinka**, bez pozycji w czasie. To wystarcza do „kontynuuj od odcinka
 N" i jest uczciwe wobec D2.
 
+### D9 — Dozorca stanu zamiast czekania na kliknięcie
+`publish()` było wołane wyłącznie z `play`/`pause`/`stop`, czyli tylko w reakcji
+na akcję użytkownika. Kiedy odtwarzacz kończył odcinek albo był zamykany
+z pilota, **nikt się o tym nie dowiadywał** — UI wisiał na „odtwarzanie".
+
+**Decyzja:** osobny wątek (`watcher.py`) odpytuje odtwarzacz co
+`watch_interval` sekund i pushuje zmiany przez SSE. Polling, nie zdarzenia, bo
+na Androidzie nie ma czego nasłuchiwać — intent nie tworzy procesu potomnego (D3).
+
+Daje trzy rzeczy: wykrycie zamknięcia odtwarzacza, płynny podgląd pozycji tam
+gdzie backend ją raportuje, oraz sygnał końca odcinka, na którym UI buduje
+pytanie „następny odcinek?" (odpowiednik menu ani-cli po odcinku).
+
+Koniec odcinka zapisuje w historii flagę `completed`, osobną od `position` —
+dzięki temu wznawianie przechodzi na następny odcinek także dla backendów,
+które pozycji nie znają (`ani-cli`, `android-intent`).
+
+Autoplay następnego odcinka jest **opcją, domyślnie wyłączoną**: zamknięcie
+odtwarzacza z pilota nie może samo włączać kolejnego odcinka.
+
+### D10 — Stage 2 zaimplementowany „na słowo honoru"
+`AndroidIntentPlayer` jest napisany w całości: `am start` z extras pozycji,
+pauza przez `input keyevent`, stan z `dumpsys media_session`. **Nie był
+uruchomiony na żadnym urządzeniu** — nie ma jeszcze odpowiedzi na D6.
+
+Ryzyka, które trzeba sprawdzić na sprzęcie:
+- format `dumpsys media_session` nie jest publicznym API i różni się między
+  wersjami Androida; parser jest defensywny, ale zgadywać nie sposób,
+- czy `am start` z tła faktycznie przejdzie (uprawnienie „Draw over other apps"),
+- czy self-adb na `127.0.0.1` da się utrzymać po restarcie.
+
+**Świadoma degradacja:** bez działającego adb backend zgłasza mniejsze
+`capabilities` (bez pauzy) i stan `unknown` zamiast udawać, że wie co leci.
+Uruchamianie działa wtedy dalej — `am start` nie potrzebuje adb.
+
 ### D6 — Kwestie otwarte
 - Który konkretnie box i wersja Androida? Bez tego nie da się ocenić, czy
   self-adb będzie stabilny — a to decyduje, czy Stage 2 wchodzi w ogóle.
@@ -333,7 +372,7 @@ blokują go kwestie otwarte z D6 (jaki box, root, Kodi).
   SQLite, leniwe mapowanie tytułu na źródło (D7). Bez `rapidfuzz` — patrz D7.
 - **Stage 3** — historia i wznawianie (uid z ciasteczka, SQLite).
 - **Stage 2** — kanał kontrolny: self-adb, play/pause/stop, polling `dumpsys`.
-  **Zablokowany do czasu odpowiedzi na D6.**
+  **Zaimplementowany, ale NIEZWERYFIKOWANY NA SPRZĘCIE** — patrz D10.
 
 ## 13. Materiały źródłowe
 

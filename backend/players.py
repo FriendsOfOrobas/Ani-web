@@ -8,6 +8,7 @@ UI pod mozliwosci, ktorych na Android TV po prostu nie ma.
 
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -317,36 +318,250 @@ class MpvIpcPlayer(PlayerBackend):
 
 
 class AndroidIntentPlayer(PlayerBackend):
-    """Docelowy backend produkcyjny: `am start` do mpv-android / VLC.
+    """Docelowy backend produkcyjny: `am start` do mpv-android / VLC. Stage 2.
 
-    Fire-and-forget — intent NIE tworzy procesu potomnego Termuksa, wiec nie ma
-    czego wait()-owac (docs.md D3). Pauza i stan wymagaja osobnego kanalu
-    self-adb, a seek do znacznika jest niedostepny i nie bedzie wystawiony.
+    Model DWUWARSTWOWY (docs.md §2):
+      1. start   — `am start` z Termuksa. Fire-and-forget: intent NIE tworzy
+                   procesu potomnego, wiec nie ma czego wait()-owac (D3).
+      2. kontrola — `adb shell` po self-adb (wireless debugging na 127.0.0.1);
+                   stan czytany z `dumpsys media_session`.
 
-    Wymaga na urzadzeniu: "Draw over other apps" dla Termuksa (inaczej `am start`
-    z tla nie przejdzie) — docs.md §10.
+    Kanal adb jest BEST-EFFORT. Po restarcie urzadzenia trzeba sparowac od nowa,
+    a port bywa losowy — dlatego brak adb degraduje capabilities, a nie wywala
+    odtwarzania. `am start` dziala bez adb.
 
-    Stage 0 (start) + Stage 2 (kontrola przez adb) — do implementacji.
+    Wymagania na urzadzeniu (docs.md §10) — bez nich to nie ruszy:
+      - "Draw over other apps" dla Termuksa (inaczej `am start` z tla nie przejdzie),
+      - wylaczony phantom process killer,
+      - termux-wake-lock.
+
+    NIEZWERYFIKOWANE NA SPRZECIE. Parsowanie `dumpsys media_session` i kody
+    keyeventow sa odwzorowane z biblioteki `androidtv` z Home Assistant
+    (docs.md §13), ale zaden box nie byl jeszcze dostepny — patrz D6.
     """
 
     name = "android-intent"
-    capabilities = Capabilities(pause=True, stop=True, seek=False, position=False, ended_events=False)
+    # `position` jest True, ale zgrubne: `dumpsys` aktualizuje pozycje tylko przy
+    # zmianach stanu, nie plynnie (D2). Seek pozostaje niedostepny i nie bedzie.
+    capabilities = Capabilities(
+        pause=True, stop=True, seek=False, position=True, ended_events=True
+    )
 
-    def __init__(self, package="is.xyz.mpv", adb_command="adb"):
+    COMMAND_TIMEOUT = 10
+
+    # Po `am start` odtwarzacz potrzebuje chwili, zeby zarejestrowac sesje
+    # medialna. Bez tej karencji brak sesji tuz po starcie bylby odczytany jako
+    # "odtwarzacz zamkniety" i dozorca oglaszalby koniec odcinka w chwili startu.
+    SESSION_GRACE_SECONDS = 8.0
+
+    # Klasy Activity odtwarzaczy. mpv-android jest domyslny (D1): hwdec + extras
+    # z pozycja. VLC bywa zepsuty na Androidzie 13+ (VLC #2776).
+    ACTIVITIES = {
+        "is.xyz.mpv": "is.xyz.mpv/.MPVActivity",
+        "org.videolan.vlc": "org.videolan.vlc/.gui.video.VideoPlayerActivity",
+    }
+
+    KEYCODE_PLAY_PAUSE = 85
+    KEYCODE_STOP = 86
+
+    def __init__(self, package="is.xyz.mpv", adb_command="adb", runner=None):
         self.package = package
         self.adb_command = adb_command
+        # Wstrzykiwalne, zeby dalo sie testowac bez Androida i bez adb.
+        self._run = runner if runner is not None else _run_command
+        self.started = False
+        self._started_at = 0.0
+        self._last_state = "idle"
+
+    # --- komendy ----------------------------------------------------------
+
+    def _am_start(self, args):
+        """`am start` uruchamiany lokalnie w Termuksie, bez adb."""
+        return self._run(["am", "start", *args], timeout=self.COMMAND_TIMEOUT)
+
+    def _adb_shell(self, args):
+        return self._run(
+            [self.adb_command, "shell", *args], timeout=self.COMMAND_TIMEOUT
+        )
+
+    @property
+    def adb_available(self):
+        try:
+            completed = self._run([self.adb_command, "get-state"], timeout=self.COMMAND_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0 and "device" in (completed.stdout or "")
+
+    def describe(self):
+        """Capabilities zaleza od tego, czy self-adb faktycznie stoi.
+
+        Bez adb zostaje samo uruchamianie — UI ma wtedy schowac pauze, zamiast
+        pokazywac przycisk, ktory nic nie robi.
+        """
+        payload = super().describe()
+        if not self.adb_available:
+            payload["capabilities"] = asdict(
+                Capabilities(play=True, pause=False, stop=False, position=False)
+            )
+            payload["adb"] = False
+        else:
+            payload["adb"] = True
+        return payload
+
+    # --- odtwarzanie ------------------------------------------------------
+
+    def _intent_args(self, stream_url, position, title):
+        activity = self.ACTIVITIES.get(self.package)
+        args = ["-a", "android.intent.action.VIEW", "-d", stream_url, "-t", "video/*"]
+        if activity:
+            args += ["-n", activity]
+        else:
+            args += ["-p", self.package]
+
+        if position:
+            # mpv-android czyta pozycje startowa z extras (w milisekundach).
+            # VLC uzywa tej samej konwencji od 1.4.1 (D5).
+            args += ["--ei", "position", str(int(position) * 1000)]
+        if title:
+            args += ["--es", "title", title]
+        return args
 
     def play(self, stream_url, headers=None, position=0, title=""):
-        raise NotImplementedError("AndroidIntentPlayer: Stage 0 (docs.md §12)")
+        # Naglowkow NIE przekazujemy: mpv-android ich z intentu nie przyjmuje
+        # (mpv-android #427). Referer musi doklejac nasze proxy — docs.md §7.
+        try:
+            completed = self._am_start(self._intent_args(stream_url, position, title))
+        except FileNotFoundError as exc:
+            raise PlayerError(
+                "Brak polecenia `am` — ten backend dziala tylko w Termuksie na Androidzie"
+            ) from exc
+        except subprocess.SubprocessError as exc:
+            raise PlayerError(f"`am start` nie odpowiedzialo: {exc}") from exc
+
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip().splitlines()
+            hint = detail[-1] if detail else f"kod {completed.returncode}"
+            raise PlayerError(
+                f"`am start` odrzucil intent: {hint}. "
+                "Sprawdz uprawnienie „Draw over other apps” dla Termuksa (docs.md §10)."
+            )
+
+        self.started = True
+        self._started_at = time.monotonic()
+        self._last_state = "playing"
+        return self.status()
 
     def pause(self):
-        raise NotImplementedError("AndroidIntentPlayer: Stage 2 (docs.md §12)")
+        if not self.started:
+            raise PlayerError("Nic nie jest uruchomione")
+        if not self.adb_available:
+            raise PlayerError(
+                "Pauza wymaga self-adb (wireless debugging na 127.0.0.1) — docs.md §2"
+            )
+        self._adb_shell(["input", "keyevent", str(self.KEYCODE_PLAY_PAUSE)])
+        # Stan i tak weryfikujemy przez dumpsys — keyevent nie potwierdza niczego.
+        return self.status()
 
     def stop(self):
-        raise NotImplementedError("AndroidIntentPlayer: Stage 2 (docs.md §12)")
+        if self.adb_available and self.started:
+            self._adb_shell(["input", "keyevent", str(self.KEYCODE_STOP)])
+        # force-stop dziala lokalnie w Termuksie i jest pewniejszy niz keyevent.
+        try:
+            self._run(["am", "force-stop", self.package], timeout=self.COMMAND_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+        self.started = False
+        self._last_state = "stopped"
+        return {"state": "stopped"}
 
     def status(self):
+        if not self.started:
+            return {"state": self._last_state if self._last_state == "stopped" else "idle"}
+        if not self.adb_available:
+            # Bez adb nie wiemy nic ponad "kazalismy uruchomic". Mowimy to wprost,
+            # zamiast udawac, ze leci — dozorca nie zglosi wtedy falszywego konca.
+            return {"state": "unknown"}
+
+        try:
+            completed = self._adb_shell(["dumpsys", "media_session"])
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"state": "unknown", "error": str(exc)}
+
+        parsed = parse_media_session(completed.stdout or "", self.package)
+        if parsed is None:
+            if time.monotonic() - self._started_at < self.SESSION_GRACE_SECONDS:
+                # Jeszcze sie podnosi — nie wolno tego ogłosić jako koniec.
+                return {"state": "starting"}
+            # Sesja zniknela po karencji — odtwarzacz zostal zamkniety.
+            self.started = False
+            self._last_state = "ended"
+            return {"state": "ended"}
+
+        self._last_state = parsed["state"]
+        return parsed
+
+
+# Kody stanu PlaybackState z Androida (android.media.session.PlaybackState).
+_PLAYBACK_STATES = {
+    0: "unknown",   # STATE_NONE
+    1: "stopped",
+    2: "paused",
+    3: "playing",
+    6: "playing",   # BUFFERING — dla uzytkownika to nadal "leci"
+    7: "unknown",   # ERROR
+}
+
+_STATE_RE = re.compile(r"state=PlaybackState\s*\{(?P<body>[^}]*)\}")
+# Lookbehind odcina wylacznie "buffered position=0", ktore inaczej nadpisywaloby
+# prawdziwe position=124500 zerem — w bloku PlaybackState wystepuja OBA.
+_FIELD_RE = re.compile(r"(?<!buffered )(?P<key>state|position|duration)=(?P<value>-?\d+)")
+
+
+def parse_media_session(output, package):
+    """Wyciaga stan sesji medialnej danej paczki z `dumpsys media_session`.
+
+    Zwraca None, gdy paczka nie ma aktywnej sesji — dla nas to znaczy, ze
+    odtwarzacz zostal zamkniety.
+
+    Format `dumpsys` nie jest publicznym API i rozni sie miedzy wersjami
+    Androida, dlatego parsowanie jest defensywne: szukamy bloku paczki, a w nim
+    pierwszego PlaybackState. Wzorowane na bibliotece `androidtv` (docs.md §13).
+    """
+    if package not in output:
+        return None
+
+    # Blok paczki konczy sie tam, gdzie zaczyna sie nastepna sesja.
+    start = output.index(package)
+    remainder = output[start:]
+    next_session = remainder.find("\n  package=", 1)
+    block = remainder if next_session == -1 else remainder[:next_session]
+
+    match = _STATE_RE.search(block)
+    if match is None:
         return {"state": "unknown"}
+
+    fields = {}
+    for found in _FIELD_RE.finditer(match.group("body")):
+        # Pierwsze wystapienie wygrywa — dumpsys potrafi powtorzyc klucz.
+        fields.setdefault(found.group("key"), int(found.group("value")))
+
+    payload = {"state": _PLAYBACK_STATES.get(fields.get("state", 0), "unknown")}
+    position = fields.get("position")
+    if position is not None and position >= 0:
+        # dumpsys podaje milisekundy; pozycja aktualizuje sie TYLKO przy zmianach
+        # stanu, wiec jest zgrubna (docs.md D2).
+        payload["position"] = position // 1000
+    duration = fields.get("duration")
+    if duration is not None and duration > 0:
+        payload["duration"] = duration // 1000
+    return payload
+
+
+def _run_command(command, timeout=10):
+    return subprocess.run(
+        command, capture_output=True, text=True, timeout=timeout, check=False
+    )
 
 
 BACKENDS = {

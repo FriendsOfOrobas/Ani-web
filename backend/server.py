@@ -22,6 +22,7 @@ from mapping import LazyMapper
 from metadata import MetadataError, MetadataService
 from players import BACKENDS, PlayerError, select_backend
 from state import AppState, SettingsStore
+from watcher import StateWatcher
 
 FRONTEND_DIR = ROOT_DIR / "frontend"
 
@@ -97,6 +98,29 @@ def create_app(config=None, player=None, source=None, settings=None, metadata=No
     mapper = LazyMapper(source, metadata)
     state = AppState(player, source, mapper=mapper)
 
+    def on_finished(before, after):
+        """Odtwarzacz przestal grac sam z siebie — koniec odcinka albo zamkniecie.
+
+        Bez tego apka nie wiedziala, ze odtwarzacz sie zamknal: publish() lecial
+        tylko z play/pause/stop, czyli wylacznie po kliknieciu uzytkownika.
+        """
+        current = before.get("current") or {}
+        if not (current.get("anilist_id") and state.owner_uid):
+            return
+        history.mark_completed(
+            state.owner_uid,
+            current["anilist_id"],
+            current.get("episode", 1),
+            position=before.get("position"),
+            duration=before.get("duration"),
+        )
+
+    watcher = StateWatcher(
+        state,
+        interval=float(config["watch_interval"]),
+        on_finished=on_finished,
+    )
+
     app = Flask(__name__, static_folder=None)
     app.config["ANI_WEB"] = {
         "config": config,
@@ -106,6 +130,9 @@ def create_app(config=None, player=None, source=None, settings=None, metadata=No
         "metadata": metadata,
         "history": history,
         "mapper": mapper,
+        # Startuje dopiero main() — testy odpytuja watcher.tick() wprost,
+        # zeby nie plodzic watkow w kazdym przypadku testowym.
+        "watcher": watcher,
     }
 
     # --- frontend ---------------------------------------------------------
@@ -155,6 +182,9 @@ def create_app(config=None, player=None, source=None, settings=None, metadata=No
 
         uid = _current_uid()
         episode = int(data.get("episode", 1))
+        # Dozorca dziala w tle, bez kontekstu zadania, wiec musi wiedziec czyj
+        # to seans, zeby zapisac historie po koncu odcinka.
+        state.owner_uid = uid
         snapshot = state.play(
             query=query or None,
             anilist_id=None if anilist_id is None else int(anilist_id),
@@ -329,6 +359,9 @@ def main(argv=None):
 
     print(f"Odtwarzacz: {bundle['state'].player.name}")
     print(f"Serwuje na http://{config['host']}:{config['port']}")
+
+    # Bez tego apka nie zauwazy, ze odtwarzacz sie skonczyl albo zostal zamkniety.
+    bundle["watcher"].start()
 
     # threaded=True jest wymagane: kazde otwarte SSE trzyma watek na stale.
     app.run(host=config["host"], port=config["port"], threaded=True, debug=args.debug)
