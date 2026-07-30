@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ani-Web test</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 2rem; }
+      button { padding: 0.6rem 1rem; margin: 0.5rem 0; }
+      .card { border: 1px solid #ddd; padding: 1rem; max-width: 480px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Ani-Web testowa wersja</h1>
+      <p id="status">Ładowanie...</p>
+      <label for="source">Źródło:</label>
+      <input id="source" value="demo.mp4" />
+      <br />
+      <button id="play">Start ani-cli / VLC</button>
+      <button id="stop">Stop</button>
+    </div>
+
+    <script>
+      const statusEl = document.getElementById("status");
+      const playBtn = document.getElementById("play");
+      const stopBtn = document.getElementById("stop");
+      const sourceInput = document.getElementById("source");
+
+      async function refreshStatus() {
+        const response = await fetch("/api/status");
+        const data = await response.json();
+        const pidText = data.pid ? ` | PID: ${data.pid}` : "";
+        statusEl.textContent = `Status: ${data.status} | Odtwarzacz: ${data.player}${pidText}`;
+      }
+
+      playBtn.addEventListener("click", async () => {
+        await fetch("/api/play", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source: sourceInput.value })
+        });
+        refreshStatus();
+      });
+
+      stopBtn.addEventListener("click", async () => {
+        await fetch("/api/stop", { method: "POST" });
+        refreshStatus();
+      });
+
+      refreshStatus();
+    </script>
+  </body>
+</html>
