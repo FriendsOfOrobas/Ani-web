@@ -20,6 +20,9 @@ DEFAULTS = {
     "player": "auto",
     "quality": "1080",
     "ani_cli_command": "ani-cli",
+    # Musi zgadzac sie z `allanime_refr` w zainstalowanym ani-cli. Wyciagniete
+    # do konfiguracji, bo allanime zmienia domeny czesciej niz my wydajemy kod.
+    "allanime_referer": "https://mkissa.to",
     "mpv_command": "mpv",
     "mpv_ipc_socket": "",
     "adb_command": "adb",

@@ -18,7 +18,15 @@ from dataclasses import dataclass, field
 # Referery wymagane przez CDN-y allanime. Odwzorowane ze zrodla ani-cli;
 # ANI_CLI_PLAYER=debug zwraca sam URL i NIE podaje referera, wiec musimy
 # odtworzyc te logike u siebie (docs.md §7).
-DEFAULT_REFERER = "https://youtu-chan.com"
+#
+# UWAGA: ta wartosc MUSI zgadzac sie z `allanime_refr` w zainstalowanym ani-cli.
+# Sprawdzone 2026-07-30 przeciwko 4.15.0 (== master): "https://mkissa.to".
+# Poprzednio bylo tu "https://youtu-chan.com" — nieaktualne, allanime zmienilo
+# domeny. Przy kazdej aktualizacji ani-cli warto porownac:
+#     grep -E '^allanime_refr=' "$(command -v ani-cli)"
+# Nadpisywalne konfiguracja (`allanime_referer`), zeby zmiana domeny nie
+# wymagala zmiany kodu.
+DEFAULT_REFERER = "https://mkissa.to"
 MP4UPLOAD_REFERER = "https://www.mp4upload.com"
 
 # UA uzywany przez ani-cli. Do zweryfikowania przeciwko zainstalowanej wersji —
@@ -56,19 +64,19 @@ class ResolvedStream:
     available_qualities: dict = field(default_factory=dict)
 
 
-def referer_for(url):
+def referer_for(url, default_referer=DEFAULT_REFERER):
     """Referer wymagany przez dany CDN (albo pusty, gdy niepotrzebny)."""
     lowered = url.lower()
     if "mp4upload" in lowered:
         return MP4UPLOAD_REFERER
     if "sharepoint" in lowered:
         return ""
-    return DEFAULT_REFERER
+    return default_referer
 
 
-def headers_for(url):
+def headers_for(url, default_referer=DEFAULT_REFERER):
     headers = {"User-Agent": USER_AGENT}
-    referer = referer_for(url)
+    referer = referer_for(url, default_referer)
     if referer:
         headers["Referer"] = referer
     return headers
@@ -144,6 +152,24 @@ def parse_debug_output(output):
     return selected, qualities
 
 
+def _no_stream_message(completed):
+    """Komunikat, gdy ani-cli nie oddalo adresu.
+
+    Nie zgadujemy przyczyny. Wczesniej bylo tu twarde "zaktualizuj ani-cli", co
+    myli, gdy ani-cli jest aktualne, a padlo cos po stronie allanime (typowo
+    zagadka Cloudflare — wtedy ani-cli mowi "Episode is released, but no valid
+    sources!"). Pokazujemy wiec to, co powiedzialo samo ani-cli.
+    """
+    detail = (completed.stderr or completed.stdout or "").strip()
+    if detail:
+        last_line = detail.splitlines()[-1].strip()
+        return f"Zrodlo niedostepne — ani-cli: {last_line}"
+    return (
+        "Zrodlo niedostepne — ani-cli nie zwrocilo adresu i nic nie wypisalo. "
+        "Sprawdz aktualnosc ani-cli oraz dostepnosc allanime."
+    )
+
+
 class SourceProvider:
     """Kontrakt warstwy zrodel. Implementacje: AniCliSource (i pozniej inne)."""
 
@@ -164,11 +190,19 @@ class AniCliSource(SourceProvider):
 
     name = "ani-cli"
 
-    def __init__(self, ani_cli_command="ani-cli", quality="1080", timeout=60, env=None):
+    def __init__(
+        self,
+        ani_cli_command="ani-cli",
+        quality="1080",
+        timeout=60,
+        env=None,
+        default_referer=DEFAULT_REFERER,
+    ):
         self.ani_cli_command = ani_cli_command
         self.quality = quality
         self.timeout = timeout
         self.env = env
+        self.default_referer = default_referer
 
     def check(self):
         """Weryfikacja zaleznosci przy starcie — czytelny blad zamiast kryptycznego.
@@ -213,13 +247,11 @@ class AniCliSource(SourceProvider):
 
         selected, qualities = parse_debug_output(completed.stdout)
         if not selected:
-            raise SourceError(
-                "Zrodlo niedostepne — zaktualizuj ani-cli (brak adresu w wyjsciu)"
-            )
+            raise SourceError(_no_stream_message(completed))
 
         return ResolvedStream(
             stream_url=selected,
-            referer=referer_for(selected),
-            headers=headers_for(selected),
+            referer=referer_for(selected, self.default_referer),
+            headers=headers_for(selected, self.default_referer),
             available_qualities=qualities,
         )

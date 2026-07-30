@@ -4,6 +4,7 @@
   "player": "auto",
   "quality": "1080",
   "ani_cli_command": "ani-cli",
+  "allanime_referer": "https://mkissa.to",
   "mpv_command": "mpv",
   "mpv_ipc_socket": "",
   "adb_command": "adb",

@@ -79,6 +79,7 @@ def create_app(config=None, player=None, source=None, settings=None):
         source = AniCliSource(
             ani_cli_command=config["ani_cli_command"],
             quality=config["quality"],
+            default_referer=config["allanime_referer"],
         )
     if settings is None:
         settings = SettingsStore(data_path(config, "settings", "settings.json"))

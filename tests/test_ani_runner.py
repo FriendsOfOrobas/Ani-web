@@ -122,6 +122,24 @@ class RefererTests(unittest.TestCase):
     def test_headers_omit_empty_referer(self):
         self.assertNotIn("Referer", headers_for("https://my.sharepoint.com/x.mp4"))
 
+    def test_default_referer_matches_installed_ani_cli(self):
+        # Sprawdzone przeciwko ani-cli 4.15.0: allanime_refr="https://mkissa.to".
+        # Poprzednia wartosc (youtu-chan.com) byla nieaktualna i cicho psulaby
+        # odtwarzanie, bo CDN-y allanime odrzucaja zly Referer.
+        self.assertEqual(DEFAULT_REFERER, "https://mkissa.to")
+
+    def test_default_referer_is_overridable(self):
+        # allanime zmienia domeny czesciej niz my wydajemy kod, wiec musi sie dac
+        # podmienic konfiguracja, bez ruszania zrodel.
+        self.assertEqual(referer_for("https://cdn.x/y.mp4", "https://inna.test"), "https://inna.test")
+        headers = headers_for("https://cdn.x/y.mp4", "https://inna.test")
+        self.assertEqual(headers["Referer"], "https://inna.test")
+
+    def test_per_cdn_referer_still_wins_over_override(self):
+        self.assertEqual(
+            referer_for("https://mp4upload.com/x", "https://inna.test"), MP4UPLOAD_REFERER
+        )
+
 
 class AniCliSourceTests(unittest.TestCase):
     def test_check_reports_missing_binaries(self):
@@ -172,13 +190,43 @@ class AniCliSourceTests(unittest.TestCase):
                 stream = AniCliSource(ani_cli_command="ani-cli").resolve("q", 1)
         self.assertEqual(stream.stream_url, "https://x.test/v.mp4")
 
-    def test_resolve_raises_readable_error_when_no_url_in_output(self):
+    def test_resolve_surfaces_what_ani_cli_actually_said(self):
+        # Realny przypadek: allanime za zagadka Cloudflare. ani-cli jest
+        # aktualne, wiec komunikat NIE moze kazac go aktualizowac — ma pokazac
+        # prawdziwa przyczyne, ktora zna tylko ani-cli.
         with tempfile.TemporaryDirectory() as tmpdir:
-            script = write_script(Path(tmpdir) / "ani-cli", "#!/bin/sh\necho nic\n")
-            source = AniCliSource(ani_cli_command=str(script))
+            script = write_script(
+                Path(tmpdir) / "ani-cli",
+                "#!/bin/sh\n"
+                "echo 'Checking dependencies...' >&2\n"
+                "echo 'Episode is released, but no valid sources!' >&2\n"
+                "exit 1\n",
+            )
             with self.assertRaises(SourceError) as ctx:
-                source.resolve("query", 1)
-        self.assertIn("zaktualizuj ani-cli", str(ctx.exception))
+                AniCliSource(ani_cli_command=str(script)).resolve("query", 1)
+
+        message = str(ctx.exception)
+        self.assertIn("Episode is released, but no valid sources!", message)
+        self.assertNotIn("zaktualizuj ani-cli", message)
+
+    def test_resolve_error_falls_back_when_ani_cli_says_nothing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = write_script(Path(tmpdir) / "ani-cli", "#!/bin/sh\nexit 1\n")
+            with self.assertRaises(SourceError) as ctx:
+                AniCliSource(ani_cli_command=str(script)).resolve("query", 1)
+        self.assertIn("nie zwrocilo adresu", str(ctx.exception))
+
+    def test_resolve_uses_configured_referer(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = write_script(
+                Path(tmpdir) / "ani-cli",
+                "#!/bin/sh\necho 'Selected link:'\necho 'https://cdn.x/y.mp4'\n",
+            )
+            stream = AniCliSource(
+                ani_cli_command=str(script), default_referer="https://nowa.test"
+            ).resolve("query", 1)
+        self.assertEqual(stream.referer, "https://nowa.test")
+        self.assertEqual(stream.headers["Referer"], "https://nowa.test")
 
     def test_resolve_raises_source_error_when_binary_missing(self):
         source = AniCliSource(ani_cli_command="/nie/ma/takiego/ani-cli")
