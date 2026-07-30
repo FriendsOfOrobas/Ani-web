@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# lokalny stan i cache aplikacji
+data/cache/
+data/settings/
+backend/config.local.json
