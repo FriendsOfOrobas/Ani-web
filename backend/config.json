@@ -1,0 +1,12 @@
+{
+  "host": "127.0.0.1",
+  "port": 8000,
+  "player": "auto",
+  "quality": "1080",
+  "ani_cli_command": "ani-cli",
+  "mpv_command": "mpv",
+  "mpv_ipc_socket": "",
+  "adb_command": "adb",
+  "android_player_package": "is.xyz.mpv",
+  "data_dir": "data"
+}

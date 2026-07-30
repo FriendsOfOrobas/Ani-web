@@ -1,0 +1,4 @@
+# Celowo minimalnie — patrz docs.md D4.
+# Flask instaluje sie w Termuksie z czystych wheeli, bez kompilacji.
+# NIE dodawac uvicorn[standard] — uvloop/httptools nie buduja sie w Termuksie.
+Flask>=3.0
