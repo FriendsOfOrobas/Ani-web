@@ -214,6 +214,23 @@ class FrontendTests(ServerTestCase):
         self.assertEqual(self.build().get("/api/status").status_code, 200)
 
 
+class SeekTests(ServerTestCase):
+    def test_seek_needs_an_integer_delta(self):
+        client = self.build()
+        self.assertEqual(client.post("/api/seek", json={}).status_code, 400)
+        self.assertEqual(client.post("/api/seek", json={"delta": "x"}).status_code, 400)
+
+    def test_seek_on_a_player_without_steps_is_an_error_not_a_crash(self):
+        response = self.build().post("/api/seek", json={"delta": 10})
+        self.assertGreaterEqual(response.status_code, 400)
+        self.assertIn("error", response.get_json())
+
+    def test_status_reports_step_capability(self):
+        caps = self.build().get("/api/status").get_json()["capabilities"]
+        self.assertIn("step", caps)
+        self.assertFalse(caps["step"])  # symulacja nie przewija
+
+
 class PlaybackTests(ServerTestCase):
     def test_play_requires_query(self):
         response = self.build().post("/api/play", json={})
@@ -269,9 +286,10 @@ class PlaybackTests(ServerTestCase):
         self.assertEqual(payload["state"], "stopped")
         self.assertIsNone(payload["current"])
 
-    def test_no_seek_endpoint_exists(self):
-        # docs.md D2 — swiadomie nie ma seeka. Test pilnuje, zeby nie wrocil.
-        self.assertEqual(self.build().post("/api/seek", json={"position": 30}).status_code, 404)
+    def test_no_seek_to_position_exists(self):
+        # docs.md D2 — nie ma seeka do pozycji. /api/seek przyjmuje tylko krok
+        # (`delta`); `position` nic nie znaczy i konczy sie bledem zadania.
+        self.assertEqual(self.build().post("/api/seek", json={"position": 30}).status_code, 400)
 
 
 class ErrorMappingTests(ServerTestCase):

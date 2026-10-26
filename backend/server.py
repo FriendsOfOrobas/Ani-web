@@ -20,6 +20,7 @@ from db import init_schema
 from history import HistoryStore
 from mapping import LazyMapper
 from metadata import MetadataError, MetadataService
+from episodes import episode_list
 from players import BACKENDS, PlayerError, select_backend
 from state import AppState, SettingsStore
 from watcher import StateWatcher
@@ -231,6 +232,15 @@ def create_app(config=None, player=None, source=None, settings=None, metadata=No
     def api_pause():
         return _json(state.pause())
 
+    @app.post("/api/seek")
+    def api_seek():
+        data = _request_json()
+        try:
+            delta = int(data.get("delta"))
+        except (TypeError, ValueError):
+            return _json({"error": "Podaj 'delta' (sekundy, liczba calkowita)", "kind": "request"}, 400)
+        return _json(state.seek(delta))
+
     @app.post("/api/stop")
     def api_stop():
         uid = _current_uid()
@@ -279,6 +289,7 @@ def create_app(config=None, player=None, source=None, settings=None, metadata=No
         uid = _current_uid()
         meta = metadata.details(anilist_id)
         payload = meta.as_dict()
+        payload["episode_list"] = episode_list(meta)
         # Szczegoly od razu mowia, od czego kontynuowac — jedno zapytanie mniej z UI.
         payload["resume"] = history.resume(uid, anilist_id, total_episodes=meta.episodes)
         return _json(payload, uid=uid)

@@ -409,6 +409,55 @@ class FakeAdb:
         return [c for c in self.calls if c[:2] == [self.calls[0][0], "shell"]] if self.calls else []
 
 
+class AndroidSeekTests(unittest.TestCase):
+    def started_player(self, adb=None):
+        adb = adb or FakeAdb()
+        player = AndroidIntentPlayer(runner=adb, local_config_file="/proc/nie-ma/x")
+        player.play("http://x/y.mp4")
+        adb.calls.clear()
+        return player, adb
+
+    def test_steps_map_to_keycodes_measured_on_the_device(self):
+        for delta, keycode in ((10, "22"), (-10, "21"), (60, "90"), (-60, "89")):
+            player, adb = self.started_player()
+            player.seek(delta)
+            self.assertIn(["adb", "shell", "input", "keyevent", keycode], adb.calls, delta)
+
+    def test_unsupported_step_is_rejected_without_touching_the_device(self):
+        player, adb = self.started_player()
+        with self.assertRaises(PlayerError):
+            player.seek(25)
+        self.assertEqual([c for c in adb.calls if "keyevent" in c], [])
+
+    def test_seek_needs_a_running_player_and_adb(self):
+        with self.assertRaises(PlayerError):
+            AndroidIntentPlayer(runner=FakeAdb()).seek(10)
+        player, _ = self.started_player(FakeAdb(adb_ok=False))
+        with self.assertRaises(PlayerError):
+            player.seek(10)
+
+    def test_capability_is_step_not_arbitrary_seek(self):
+        caps = AndroidIntentPlayer.capabilities
+        self.assertTrue(caps.step)
+        self.assertFalse(caps.seek)  # docs.md D2: dowolnego seeka nadal nie ma
+
+
+class MpvIpcSeekTests(unittest.TestCase):
+    def test_seek_sends_relative_command(self):
+        player = MpvIpcPlayer(mpv_command="mpv", ipc_socket="/tmp/s")
+        with mock.patch.object(MpvIpcPlayer, "is_running", new_callable=mock.PropertyMock, return_value=True), \
+             mock.patch.object(player, "_command") as command, \
+             mock.patch.object(player, "status", return_value={"state": "playing"}):
+            player.seek(-10)
+        command.assert_called_once_with("seek", -10.0, "relative")
+
+    def test_seek_when_not_running_is_an_error(self):
+        player = MpvIpcPlayer(mpv_command="mpv", ipc_socket="/tmp/s")
+        with mock.patch.object(MpvIpcPlayer, "is_running", new_callable=mock.PropertyMock, return_value=False):
+            with self.assertRaises(PlayerError):
+                player.seek(10)
+
+
 class MpvIpcSkipArgsTests(unittest.TestCase):
     def test_skip_adds_script_and_opts(self):
         args = MpvIpcPlayer(mpv_command="mpv", ipc_socket="/tmp/s")._build_args(
@@ -682,10 +731,12 @@ class AndroidIntentPlayerTests(unittest.TestCase):
         AndroidIntentPlayer(runner=adb).play("http://x/y.mp4", headers={"Referer": "https://r"})
         self.assertNotIn("https://r", " ".join(adb.calls[0]))
 
-    def test_no_seek_method_exists(self):
-        # docs.md D2 — seek jest niedostepny i nie ma go udawac.
+    def test_arbitrary_seek_still_does_not_exist(self):
+        # docs.md D2: nie ma seeka do dowolnego miejsca (ani suwaka). Jest tylko
+        # krok +-10/+-60 s; kazda inna wartosc jest odrzucana.
         self.assertFalse(AndroidIntentPlayer.capabilities.seek)
-        self.assertFalse(hasattr(AndroidIntentPlayer, "seek"))
+        with self.assertRaises(PlayerError):
+            AndroidIntentPlayer(runner=FakeAdb()).seek(37)
 
 
 if __name__ == "__main__":

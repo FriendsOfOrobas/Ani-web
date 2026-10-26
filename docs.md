@@ -265,6 +265,28 @@ intentem, a `position` z `dumpsys media_session` nie płynie w czasie.
 zgrubny skok ±10 s przez powtarzane media-keys — dopiero po weryfikacji na
 sprzęcie, jako funkcja opcjonalna.
 
+**Aktualizacja D2 (2026-10-26):** nadal NIE ma seeka do dowolnej pozycji ani suwaka.
+Doszlo przewijanie o staly krok (capability `step`, `POST /api/seek {"delta": N}`,
+N ∈ {-60, -10, 10, 60}). Na Androidzie to klawisze wysylane przez adb —
+zmierzone w mpv-android na HY300: strzalki ≈ ±10 s (do klatki kluczowej), klawisze
+mediow FF/REW ≈ ±60 s; `mpv-ipc` robi to komenda `seek` wzgledem pozycji.
+
+### D11 — Lista odcinkow i miejsce na opisy (rozbudowa, nie funkcja)
+UI wybiera odcinek z listy rozwijanej (szczegoly i menu po odcinku), nie
+klikaniem numeru. Lista pochodzi z `backend/episodes.py`: `episode_list(meta)`
+zwraca `[{"number": n}, ...]` dla wydanych odcinkow (`AnimeMeta.aired` =
+`nextAiringEpisode - 1` dla serii w emisji, inaczej `episodes`). Bez liczby
+odcinkow front pokazuje pole liczbowe. Element listy moze miec opcjonalne
+`title`, `description`, `thumbnail`, `air_date` — front pokazuje `title` obok
+numeru, reszte ignoruje. Zrodlo (ani-cli) zna tylko numery, a AniList nie daje
+stabilnie tytulow odcinkow, wiec dzis NIC ich nie pobiera; dostawce opisow
+dopinamy przez `extra` w `episode_list` bez zmian w reszcie kodu.
+
+### Menu po odcinku = menu ani-cli
+Odpowiada pozycjom ani-cli (`next, replay, previous, select, change_quality, quit`):
+Nastepny, Znowu, Poprzedni, lista odcinkow (start od razu po wyborze), lista
+jakosci (odtwarza biezacy odcinek w nowej jakosci, jak `change_quality`), zamkniecie.
+
 ### D3 — Model intentu zamiast modelu procesu (poprawka)
 Pierwotnie: „backend monitoruje stan procesu i reaguje na błędy".
 Na Androidzie `am start` nie tworzy procesu potomnego Termuksa.

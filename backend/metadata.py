@@ -47,6 +47,7 @@ query ($q: String, $perPage: Int) {
       synonyms
       description(asHtml: false)
       episodes
+      nextAiringEpisode { episode }
       status
       seasonYear
       format
@@ -67,6 +68,7 @@ query ($id: Int) {
     synonyms
     description(asHtml: false)
     episodes
+    nextAiringEpisode { episode }
     status
     seasonYear
     format
@@ -102,6 +104,9 @@ class AnimeMeta:
     banner: str = ""
     # MyAnimeList ID z AniList (`idMal`) — klucz AniSkip. 0 = brak.
     mal_id: int = 0
+    # Ile odcinkow juz wyszlo. Dla serii w emisji `episodes` bywa puste, a lista
+    # odcinkow w UI musi sie z czegos wziac (nextAiringEpisode - 1).
+    aired: int = 0
 
     @property
     def title(self):
@@ -163,6 +168,14 @@ def _get_json(url):
         return json.loads(response.read().decode("utf-8"))
 
 
+def _aired_episodes(node):
+    """Liczba wydanych odcinkow: pelna seria albo (nastepny w emisji - 1)."""
+    upcoming = (node.get("nextAiringEpisode") or {}).get("episode")
+    if upcoming:
+        return max(int(upcoming) - 1, 0)
+    return node.get("episodes") or 0
+
+
 def _meta_from_anilist(node):
     title = node.get("title") or {}
     cover = node.get("coverImage") or {}
@@ -181,6 +194,7 @@ def _meta_from_anilist(node):
         cover=cover.get("large") or cover.get("medium") or "",
         banner=node.get("bannerImage") or "",
         mal_id=node.get("idMal") or 0,
+        aired=_aired_episodes(node),
     )
 
 
@@ -298,7 +312,7 @@ class MetadataService:
         payload = json.loads(row["payload"])
         # Wpisy sprzed dodania mal_id nie maja tego klucza — odswiezamy je, zamiast
         # trzymac 30 dni "brak MAL ID" dla serii, ktore je maja.
-        if "mal_id" not in payload:
+        if "mal_id" not in payload or "aired" not in payload:
             return None
         return _meta_from_payload(payload)
 

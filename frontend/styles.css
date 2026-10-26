@@ -624,6 +624,21 @@ button.danger {
   font-size: 1rem;
 }
 
+/* Przewijanie o krok: cztery rowne przyciski nad Pauza/Stop. */
+.seek-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+  flex: 1 1 100%;
+}
+
+.seek-row button {
+  min-height: 48px;
+  padding: 0 0.4rem;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Glowna kontrolka (Pauza/Wznow) swieci lampa; Stop zostaje cichy. */
 .nowbar-actions #pause {
   background: var(--accent);
@@ -678,8 +693,7 @@ button.danger {
   bottom: 0;
   z-index: 4;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 0.75rem;
   max-width: 32rem;
   margin: 1rem auto 0;
@@ -693,6 +707,13 @@ button.danger {
 
 @keyframes rise {
   from { opacity: 0; transform: translateY(8px); }
+}
+
+.ended-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .ended-text {
@@ -716,29 +737,39 @@ button.danger {
 
 .ended-actions {
   display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  flex: none;
+  gap: 0.5rem;
 }
 
 .ended-actions button {
+  flex: 1;
   min-height: 48px;
   padding: 0 0.9rem;
-  font-size: 0.92rem;
+  font-size: 0.95rem;
 }
 
-.ended-actions .ghost {
+/* "Nastepny" jest glowna akcja: dostaje wiecej miejsca niz Znowu i Poprzedni. */
+.ended-actions #ended-next {
+  flex: 2;
+  margin-top: 0;
+}
+
+.ended-head .ghost {
   min-width: 48px;
   padding: 0 0.5rem;
 }
 
-/* Na waskich telefonach pytanie po odcinku lamie sie na dwa wiersze. */
-@media (max-width: 26rem) {
-  .ended-prompt {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .ended-actions button:not(.ghost) {
-    flex: 1;
-  }
+.ended-more {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 0.6rem;
+}
+
+.ended-more label {
+  margin: 0 0 0.25rem;
+  font-size: 0.8rem;
+}
+
+.ended-more select,
+.ended-more input {
+  min-height: 48px;
 }

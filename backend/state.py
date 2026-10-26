@@ -172,6 +172,12 @@ class AppState:
         self.player.pause()
         return self.publish()
 
+    def seek(self, delta):
+        if not self.player.capabilities.step:
+            raise PlayerError(f"{self.player.name}: przewijanie nieobslugiwane")
+        self.player.seek(delta)
+        return self.publish()
+
     def stop(self):
         self.player.stop()
         self.current = None

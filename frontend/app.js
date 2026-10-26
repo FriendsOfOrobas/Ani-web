@@ -39,6 +39,7 @@ const ui = {
   detailFacts: el("detail-facts"),
   detailDescription: el("detail-description"),
   detailEpisode: el("detail-episode"),
+  detailEpisodeNumber: el("detail-episode-number"),
   detailQuality: el("detail-quality"),
   detailResume: el("detail-resume"),
   detailPlay: el("detail-play"),
@@ -58,6 +59,11 @@ const ui = {
   endedNext: el("ended-next"),
   endedReplay: el("ended-replay"),
   endedClose: el("ended-close"),
+  endedPrev: el("ended-prev"),
+  endedEpisode: el("ended-episode"),
+  endedEpisodeNumber: el("ended-episode-number"),
+  endedQuality: el("ended-quality"),
+  seekRow: el("seek-row"),
 
   setAutoplay: el("set-autoplay"),
   setSkip: el("set-skip"),
@@ -89,6 +95,7 @@ const CAPABILITY_LABELS = {
   stop: "zatrzymanie",
   seek: "przeskakiwanie",
   position: "odczyt pozycji",
+  step: "przewijanie o krok",
   ended_events: "wykrycie końca",
 };
 
@@ -138,6 +145,52 @@ function formatTime(seconds) {
 // (ani-cli + sonda + ewentualny powrot do trybu debug na slabym urzadzeniu).
 const API_TIMEOUT_MS = 10000;
 const PLAY_TIMEOUT_MS = 120000;
+
+// --- lista odcinkow ------------------------------------------------------
+//
+// Lista rozwijana zamiast klikania numeru. Element listy to {number, ...}; tytul
+// (gdy kiedys bedzie) pokazujemy obok numeru, reszte pol ignorujemy — patrz
+// backend/episodes.py. Bez listy (nieznana liczba odcinkow) zostaje pole liczbowe.
+
+function episodeLabel(item) {
+  return item.title ? `${item.number}. ${item.title}` : `Odcinek ${item.number}`;
+}
+
+function fillEpisodes(select, numberInput, list, selected) {
+  const hasList = Array.isArray(list) && list.length > 0;
+  select.hidden = !hasList;
+  numberInput.hidden = hasList;
+  const label = select.closest(".field")?.querySelector("label");
+  if (label) label.htmlFor = hasList ? select.id : numberInput.id;
+
+  select.replaceChildren();
+  if (!hasList) {
+    numberInput.value = selected;
+    return;
+  }
+  const options = document.createDocumentFragment();
+  for (const item of list) {
+    const option = document.createElement("option");
+    option.value = String(item.number);
+    option.textContent = episodeLabel(item);
+    options.append(option);
+  }
+  select.append(options);
+  selectEpisode(select, numberInput, selected);
+}
+
+function selectEpisode(select, numberInput, number) {
+  if (select.hidden) {
+    numberInput.value = number;
+    return;
+  }
+  const exists = Array.from(select.options).some((o) => o.value === String(number));
+  select.value = exists ? String(number) : select.options[select.options.length - 1]?.value;
+}
+
+function readEpisode(select, numberInput) {
+  return Number(select.hidden ? numberInput.value : select.value) || 1;
+}
 
 async function api(path, options, timeoutMs = API_TIMEOUT_MS) {
   let response;
@@ -321,7 +374,7 @@ function renderResume(resume, entry) {
     ui.detailResume.textContent = "";
     return;
   }
-  ui.detailEpisode.value = resume.episode;
+  selectEpisode(ui.detailEpisode, ui.detailEpisodeNumber, resume.episode);
 
   if (resume.reason === "wznowienie") {
     ui.detailResume.textContent = `Wznowisz odcinek ${resume.episode} od ${formatTime(resume.position)}.`;
@@ -367,7 +420,8 @@ async function openDetail(anilistId) {
       ui.detailCover.hidden = false;
     }
     ui.detailQuality.value = defaultQuality;
-    ui.detailEpisode.max = meta.episodes || "";
+    ui.detailEpisodeNumber.max = meta.aired || meta.episodes || "";
+    fillEpisodes(ui.detailEpisode, ui.detailEpisodeNumber, meta.episode_list, 1);
 
     const history = await api(`/api/history/${anilistId}`);
     if (seq !== detailSeq) return;
@@ -380,13 +434,17 @@ async function openDetail(anilistId) {
   }
 }
 
-function playEpisode({ anilistId, episode, quality, position = 0, title, totalEpisodes }) {
+function playEpisode({
+  anilistId, episode, quality, position = 0, title, totalEpisodes, episodeList,
+}) {
   return guardedPlay(() =>
-    startEpisode({ anilistId, episode, quality, position, title, totalEpisodes })
+    startEpisode({ anilistId, episode, quality, position, title, totalEpisodes, episodeList })
   );
 }
 
-async function startEpisode({ anilistId, episode, quality, position, title, totalEpisodes }) {
+async function startEpisode({
+  anilistId, episode, quality, position, title, totalEpisodes, episodeList,
+}) {
   const snapshot = await post(
     "/api/play",
     {
@@ -404,6 +462,7 @@ async function startEpisode({ anilistId, episode, quality, position, title, tota
     quality: quality || defaultQuality,
     title: title || snapshot.current?.title || "",
     totalEpisodes: totalEpisodes || snapshot.current?.total_episodes || 0,
+    episodeList: episodeList || [],
   };
   hideEndedPrompt();
   render(snapshot);
@@ -417,11 +476,12 @@ ui.detailPlay.addEventListener("click", () =>
     ui.detailPlay.textContent = "Szukam źródła…";
     await playEpisode({
       anilistId: currentDetail.anilist_id,
-      episode: Number(ui.detailEpisode.value) || 1,
+      episode: readEpisode(ui.detailEpisode, ui.detailEpisodeNumber),
       quality: ui.detailQuality.value,
       position: Number(currentDetail.resume?.position || 0),
       title: currentDetail.title,
-      totalEpisodes: currentDetail.episodes,
+      totalEpisodes: currentDetail.aired || currentDetail.episodes,
+      episodeList: currentDetail.episode_list,
     });
   })
 );
@@ -433,7 +493,7 @@ ui.detailForget.addEventListener("click", () =>
     await api(`/api/history/${currentDetail.anilist_id}`, { method: "DELETE" });
     ui.detailForget.hidden = true;
     ui.detailResume.textContent = "";
-    ui.detailEpisode.value = 1;
+    selectEpisode(ui.detailEpisode, ui.detailEpisodeNumber, 1);
     loadContinue();
   })
 );
@@ -490,7 +550,10 @@ ui.directPlay.addEventListener("click", () =>
   })
 );
 
-// --- pytanie po odcinku (odpowiednik menu ani-cli) ------------------------
+// --- menu po odcinku (to samo, co w ani-cli) ------------------------------
+//
+// ani-cli po odcinku pokazuje: next, replay, previous, select, change_quality,
+// quit. Tu: Nastepny, Znowu, Poprzedni, lista odcinkow, lista jakosci, zamkniecie.
 
 function hideEndedPrompt() {
   ui.endedPrompt.hidden = true;
@@ -507,6 +570,9 @@ function showEndedPrompt(finished) {
     ? `${lastPlayed.title} — to był ostatni odcinek.`
     : `${lastPlayed.title} — następny: ${lastPlayed.episode + 1}.`;
   ui.endedNext.hidden = Boolean(last);
+  ui.endedPrev.hidden = lastPlayed.episode <= 1;
+  fillEpisodes(ui.endedEpisode, ui.endedEpisodeNumber, lastPlayed.episodeList, lastPlayed.episode);
+  ui.endedQuality.value = lastPlayed.quality;
   ui.endedPrompt.hidden = false;
   // Fokus na akcji wiodacej, zeby pilot/klawiatura nie musialy tabowac przez
   // cala strone do pytania, ktore wlasnie sie pojawilo.
@@ -519,31 +585,62 @@ function showEndedPrompt(finished) {
   }
 }
 
-function playNext() {
+// Odcinek `episode` tego samego anime, opcjonalnie w innej jakosci. Reszta
+// (tytul, liczba odcinkow, lista) zostaje z poprzedniego odtwarzania.
+function playOther(episode, quality) {
   return playEpisode({
     anilistId: lastPlayed.anilistId,
-    episode: lastPlayed.episode + 1,
-    quality: lastPlayed.quality,
+    episode,
+    quality: quality || lastPlayed.quality,
     title: lastPlayed.title,
     totalEpisodes: lastPlayed.totalEpisodes,
+    episodeList: lastPlayed.episodeList,
   });
 }
 
+function playNext() {
+  return playOther(lastPlayed.episode + 1);
+}
+
+// Zmiana wyboru z listy startuje odtwarzanie od razu (jak "select" w ani-cli),
+// a blad pokazuje sie jak przy kazdej innej akcji.
+async function playFromMenu(action) {
+  showError("");
+  try {
+    await action();
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
 ui.endedNext.addEventListener("click", () => withBusy(ui.endedNext, playNext));
-
 ui.endedReplay.addEventListener("click", () =>
-  withBusy(ui.endedReplay, () =>
-    playEpisode({
-      anilistId: lastPlayed.anilistId,
-      episode: lastPlayed.episode,
-      quality: lastPlayed.quality,
-      title: lastPlayed.title,
-      totalEpisodes: lastPlayed.totalEpisodes,
-    })
-  )
+  withBusy(ui.endedReplay, () => playOther(lastPlayed.episode))
 );
-
+ui.endedPrev.addEventListener("click", () =>
+  withBusy(ui.endedPrev, () => playOther(Math.max(1, lastPlayed.episode - 1)))
+);
+ui.endedEpisode.addEventListener("change", () =>
+  playFromMenu(() => playOther(Number(ui.endedEpisode.value) || 1))
+);
+ui.endedEpisodeNumber.addEventListener("change", () =>
+  playFromMenu(() => playOther(Number(ui.endedEpisodeNumber.value) || 1))
+);
+// "change_quality" w ani-cli odtwarza biezacy odcinek w nowej jakosci.
+ui.endedQuality.addEventListener("change", () =>
+  playFromMenu(() => playOther(lastPlayed.episode, ui.endedQuality.value))
+);
 ui.endedClose.addEventListener("click", hideEndedPrompt);
+
+// --- przewijanie o krok (+-10 s, +-60 s) -----------------------------------
+
+ui.seekRow.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-delta]");
+  if (!button) return;
+  withBusy(button, async () => {
+    render(await post("/api/seek", { delta: Number(button.dataset.delta) }));
+  });
+});
 
 // --- pasek odtwarzania ----------------------------------------------------
 
@@ -551,6 +648,7 @@ function applyCapabilities(caps) {
   capabilities = caps || {};
   ui.pause.hidden = !capabilities.pause;
   ui.stop.hidden = !capabilities.stop;
+  ui.seekRow.hidden = !capabilities.step;
 
   ui.capabilities.replaceChildren();
   for (const [key, label] of Object.entries(CAPABILITY_LABELS)) {

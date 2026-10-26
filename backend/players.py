@@ -34,6 +34,9 @@ class Capabilities:
     pause: bool = False
     stop: bool = True
     seek: bool = False
+    # Przewijanie o staly krok wzgledem pozycji (+-10 s, +-60 s). To nie jest seek
+    # do dowolnego miejsca (docs.md D2) — tylko przyciski "do przodu / do tylu".
+    step: bool = False
     position: bool = False
     ended_events: bool = False
 
@@ -59,6 +62,9 @@ class PlayerBackend:
 
     def pause(self):
         raise PlayerError(f"{self.name}: pauza nieobslugiwana")
+
+    def seek(self, delta):
+        raise PlayerError(f"{self.name}: przewijanie nieobslugiwane")
 
     def stop(self):
         raise NotImplementedError
@@ -169,7 +175,9 @@ class MpvIpcPlayer(PlayerBackend):
     """
 
     name = "mpv-ipc"
-    capabilities = Capabilities(pause=True, stop=True, seek=True, position=True, ended_events=True)
+    capabilities = Capabilities(
+        pause=True, stop=True, seek=True, step=True, position=True, ended_events=True
+    )
 
     # Ile czekamy, az mpv wystawi socket IPC po starcie procesu.
     SOCKET_WAIT_SECONDS = 5.0
@@ -300,6 +308,12 @@ class MpvIpcPlayer(PlayerBackend):
         self._command("cycle", "pause")
         return self.status()
 
+    def seek(self, delta):
+        if not self.is_running:
+            raise PlayerError("mpv nie jest uruchomiony")
+        self._command("seek", float(delta), "relative")
+        return self.status()
+
     def stop(self):
         if self.is_running:
             try:
@@ -355,16 +369,15 @@ class AndroidIntentPlayer(PlayerBackend):
       - wylaczony phantom process killer,
       - termux-wake-lock.
 
-    NIEZWERYFIKOWANE NA SPRZECIE. Parsowanie `dumpsys media_session` i kody
-    keyeventow sa odwzorowane z biblioteki `androidtv` z Home Assistant
-    (docs.md §13), ale zaden box nie byl jeszcze dostepny — patrz D6.
+    Zweryfikowane na Magcubic HY300 Pro+ z mpv-android (docs.md D10): start,
+    pauza, krok +-10/+-60 s, stan i pozycja z `dumpsys`, wykrycie konca.
     """
 
     name = "android-intent"
-    # `position` jest True, ale zgrubne: `dumpsys` aktualizuje pozycje tylko przy
-    # zmianach stanu, nie plynnie (D2). Seek pozostaje niedostepny i nie bedzie.
+    # `position` jest zgrubna: `dumpsys` odswieza ja co kilka sekund (D2). Seek do
+    # dowolnego miejsca nie istnieje; jest tylko krok +-10 s / +-60 s przez klawisze.
     capabilities = Capabilities(
-        pause=True, stop=True, seek=False, position=True, ended_events=True
+        pause=True, stop=True, seek=False, step=True, position=True, ended_events=True
     )
 
     COMMAND_TIMEOUT = 10
@@ -383,6 +396,9 @@ class AndroidIntentPlayer(PlayerBackend):
 
     KEYCODE_PLAY_PAUSE = 85
     KEYCODE_STOP = 86
+    # Zmierzone w mpv-android na HY300: strzalki przewijaja o ~10 s (do klatki
+    # kluczowej), klawisze mediow FF/REW o ~60 s.
+    SEEK_KEYCODES = {10: 22, -10: 21, 60: 90, -60: 89}
 
     # mpv-android nie przyjmuje Referera ani napisow z intentu (#427), wiec tak jak
     # ani-cli (android_mpv) piszemy je do pliku, ktory uzytkownik raz dolacza w
@@ -581,6 +597,19 @@ class AndroidIntentPlayer(PlayerBackend):
             )
         self._adb_shell(["input", "keyevent", str(self.KEYCODE_PLAY_PAUSE)])
         # Stan i tak weryfikujemy przez dumpsys — keyevent nie potwierdza niczego.
+        return self.status()
+
+    def seek(self, delta):
+        if not self.started:
+            raise PlayerError("Nic nie jest uruchomione")
+        keycode = self.SEEK_KEYCODES.get(int(delta))
+        if keycode is None:
+            raise PlayerError(
+                f"Obslugiwany krok to {sorted(self.SEEK_KEYCODES)} sekund, nie {delta}"
+            )
+        if not self.adb_available:
+            raise PlayerError("Przewijanie wymaga self-adb (wireless debugging)")
+        self._adb_shell(["input", "keyevent", str(keycode)])
         return self.status()
 
     def stop(self):

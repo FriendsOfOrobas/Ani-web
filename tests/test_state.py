@@ -105,6 +105,26 @@ class AppStateTests(unittest.TestCase):
         finally:
             state_module.fetch_skip_times = original
 
+    def test_seek_is_refused_when_player_has_no_step_capability(self):
+        with self.assertRaises(PlayerError):
+            self.state.seek(10)
+
+    def test_seek_is_forwarded_and_published(self):
+        class Stepper(RecordingPlayer):
+            from players import Capabilities
+            capabilities = Capabilities(pause=True, stop=True, step=True)
+            steps = []
+
+            def seek(self, delta):
+                self.steps.append(delta)
+
+        player = Stepper()
+        state = AppState(player, StubSource())
+        q = state.subscribe()
+        state.seek(-60)
+        self.assertEqual(player.steps, [-60])
+        self.assertFalse(q.empty())
+
     def test_play_without_source_is_a_source_error(self):
         state = AppState(RecordingPlayer(), source=None)
         with self.assertRaises(SourceError):
