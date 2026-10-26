@@ -42,6 +42,7 @@ query ($q: String, $perPage: Int) {
   Page(perPage: $perPage) {
     media(search: $q, type: ANIME, sort: SEARCH_MATCH) {
       id
+      idMal
       title { romaji english native }
       synonyms
       description(asHtml: false)
@@ -61,6 +62,7 @@ DETAILS_QUERY = """
 query ($id: Int) {
   Media(id: $id, type: ANIME) {
     id
+    idMal
     title { romaji english native }
     synonyms
     description(asHtml: false)
@@ -98,6 +100,8 @@ class AnimeMeta:
     score: int = 0
     cover: str = ""
     banner: str = ""
+    # MyAnimeList ID z AniList (`idMal`) — klucz AniSkip. 0 = brak.
+    mal_id: int = 0
 
     @property
     def title(self):
@@ -176,6 +180,7 @@ def _meta_from_anilist(node):
         score=node.get("averageScore") or 0,
         cover=cover.get("large") or cover.get("medium") or "",
         banner=node.get("bannerImage") or "",
+        mal_id=node.get("idMal") or 0,
     )
 
 
@@ -290,7 +295,12 @@ class MetadataService:
             ).fetchone()
         if row is None or now() - row["fetched_at"] > ANIME_TTL_SECONDS:
             return None
-        return _meta_from_payload(json.loads(row["payload"]))
+        payload = json.loads(row["payload"])
+        # Wpisy sprzed dodania mal_id nie maja tego klucza — odswiezamy je, zamiast
+        # trzymac 30 dni "brak MAL ID" dla serii, ktore je maja.
+        if "mal_id" not in payload:
+            return None
+        return _meta_from_payload(payload)
 
     def _cached_search(self, query):
         with transaction(self.db_path) as connection:

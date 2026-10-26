@@ -12,7 +12,7 @@ import json
 import queue
 import uuid
 
-from flask import Flask, Response, jsonify, request, send_from_directory
+from flask import Flask, Response, g, jsonify, request, send_from_directory
 
 from ani_runner import AniCliSource, SourceError
 from config import ROOT_DIR, data_path, load_config
@@ -56,7 +56,11 @@ def _event_stream(state):
 
 
 def _current_uid():
-    return request.cookies.get(UID_COOKIE) or uuid.uuid4().hex
+    # Jedno uid na zadanie: ciasteczko albo swiezo wygenerowane. Zapamietane w `g`,
+    # zeby kolejne wywolania w tym samym zadaniu i after_request widzialy to samo.
+    if "uid" not in g:
+        g.uid = request.cookies.get(UID_COOKIE) or uuid.uuid4().hex
+    return g.uid
 
 
 def _json(payload, status=200, uid=None):
@@ -122,6 +126,18 @@ def create_app(config=None, player=None, source=None, settings=None, metadata=No
     )
 
     app = Flask(__name__, static_folder=None)
+
+    @app.after_request
+    def ensure_uid_cookie(response):
+        """Ciasteczko dostaje KAZDA odpowiedz, nie tylko te, ktore pytaja o uid.
+
+        Inaczej pierwsze zadania (status, SSE) zostawialy klienta bez ciasteczka,
+        a rownolegle zadania dostawaly kazde swoje uid.
+        """
+        uid = _current_uid()
+        if request.cookies.get(UID_COOKIE) != uid:
+            response.set_cookie(UID_COOKIE, uid, max_age=UID_MAX_AGE, samesite="Lax")
+        return response
     app.config["ANI_WEB"] = {
         "config": config,
         "state": state,
@@ -191,6 +207,7 @@ def create_app(config=None, player=None, source=None, settings=None, metadata=No
             episode=episode,
             quality=data.get("quality") or config["quality"],
             position=int(data.get("position", 0)),
+            skip_intro=bool(data.get("skip_intro")),
         )
 
         current = snapshot.get("current") or {}

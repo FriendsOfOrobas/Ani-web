@@ -171,6 +171,14 @@ class StatusTests(ServerTestCase):
         self.assertTrue(payload["capabilities"]["pause"])
         self.assertFalse(payload["capabilities"]["seek"])
 
+    def test_status_sets_the_uid_cookie_once(self):
+        # Pierwsze zadanie klienta (status) ma ustalic uid; kolejne go nie zmieniaja.
+        client = self.build()
+        first = client.get("/api/status")
+        self.assertIn(UID_COOKIE, first.headers.get("Set-Cookie", ""))
+        second = client.get("/api/status")
+        self.assertNotIn("Set-Cookie", second.headers)
+
     def test_status_reports_missing_source_dependencies(self):
         client = self.build(source=StubSource(missing=["botan"]))
         payload = client.get("/api/status").get_json()

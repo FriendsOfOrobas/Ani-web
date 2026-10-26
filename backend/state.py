@@ -9,6 +9,7 @@ import queue
 import threading
 
 from ani_runner import SourceError
+from aniskip import fetch_skip_times
 from players import PlayerError
 
 
@@ -100,7 +101,7 @@ class AppState:
 
     # --- akcje ------------------------------------------------------------
 
-    def play(self, query=None, anilist_id=None, episode=1, quality=None, position=0):
+    def play(self, query=None, anilist_id=None, episode=1, quality=None, position=0, skip_intro=False):
         """Rozwiazuje adres just-in-time i uruchamia odtwarzacz.
 
         Kolejnosc jest istotna: adresy sa tokenizowane i krotko zyjace, wiec
@@ -130,6 +131,12 @@ class AppState:
             self.publish()
             raise
 
+        # Czasy z AniSkip tylko na zyczenie i tylko gdy znamy MAL ID (z AniList).
+        # Brak danych/sieci to norma — wtedy po prostu nic nie przewijamy.
+        skip = {}
+        if skip_intro and meta is not None and getattr(meta, "mal_id", 0):
+            skip = fetch_skip_times(meta.mal_id, episode)
+
         self.current = {
             "query": query,
             "episode": episode,
@@ -139,6 +146,7 @@ class AppState:
             "title": meta.title if meta else query,
             "cover": meta.cover if meta else "",
             "total_episodes": meta.episodes if meta else 0,
+            "skip": {kind: list(span) for kind, span in skip.items()},
         }
 
         try:
@@ -147,6 +155,9 @@ class AppState:
                 headers=stream.headers,
                 position=position,
                 title=f"{query} — odc. {episode}",
+                subtitles=stream.subtitles,
+                audio=stream.audio,
+                skip=skip,
             )
         except (PlayerError, NotImplementedError) as exc:
             self.last_error = str(exc)

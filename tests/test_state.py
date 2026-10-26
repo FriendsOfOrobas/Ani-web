@@ -20,9 +20,10 @@ class RecordingPlayer(SimulatedPlayer):
         super().__init__()
         self.calls = []
 
-    def play(self, stream_url, headers=None, position=0, title=""):
+    def play(self, stream_url, headers=None, position=0, title="", subtitles="", audio="", skip=None):
         self.calls.append(
-            {"stream_url": stream_url, "headers": headers, "position": position, "title": title}
+            {"stream_url": stream_url, "headers": headers, "position": position, "title": title,
+             "skip": skip}
         )
         return super().play(stream_url, headers, position, title)
 
@@ -66,6 +67,43 @@ class AppStateTests(unittest.TestCase):
         self.assertEqual(call["headers"], {"Referer": "https://youtu-chan.com"})
         self.assertEqual(call["position"], 90)
         self.assertIn("odc. 3", call["title"])
+
+    def test_skip_times_are_fetched_only_on_request_and_with_mal_id(self):
+        from types import SimpleNamespace
+        import state as state_module
+
+        meta = SimpleNamespace(
+            anilist_id=20, mal_id=20, title="NARUTO", cover="", episodes=220
+        )
+
+        class Mapper:
+            def resolve(self, anilist_id, episode=1, quality=None):
+                return StubSource().resolve("x", episode), meta
+
+        fetched = []
+
+        def fake_fetch(mal_id, episode):
+            fetched.append((mal_id, episode))
+            return {"op": (1.0, 102.0)}
+
+        original = state_module.fetch_skip_times
+        state_module.fetch_skip_times = fake_fetch
+        try:
+            st = AppState(self.player, StubSource(), mapper=Mapper())
+            st.play(anilist_id=20, episode=4)  # bez zyczenia: brak zapytania
+            self.assertEqual(fetched, [])
+            self.assertEqual(self.player.calls[-1]["skip"], {})
+
+            snapshot = st.play(anilist_id=20, episode=4, skip_intro=True)
+            self.assertEqual(fetched, [(20, 4)])
+            self.assertEqual(self.player.calls[-1]["skip"], {"op": (1.0, 102.0)})
+            self.assertEqual(snapshot["current"]["skip"], {"op": [1.0, 102.0]})
+
+            meta.mal_id = 0  # seria bez MAL ID: nie pytamy w ogole
+            st.play(anilist_id=20, episode=5, skip_intro=True)
+            self.assertEqual(fetched, [(20, 4)])
+        finally:
+            state_module.fetch_skip_times = original
 
     def test_play_without_source_is_a_source_error(self):
         state = AppState(RecordingPlayer(), source=None)

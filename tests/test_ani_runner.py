@@ -18,6 +18,7 @@ from ani_runner import (
     build_resolve_command,
     headers_for,
     parse_debug_output,
+    parse_probe_output,
     referer_for,
     resolve_env,
 )
@@ -141,6 +142,41 @@ class RefererTests(unittest.TestCase):
         )
 
 
+PROBE_OUTPUT = (
+    "\x1b[2K\r\x1b[1;34mhianime.at links fetched\x1b[0m\n"
+    "ANIWEB-ARG\t--referrer=https://zokoanime.video/\n"
+    "ANIWEB-ARG\t--sub-file=https://cdn.test/subs/en.vtt\n"
+    "ANIWEB-ARG\t--force-media-title=Naruto Episode 1\n"
+    "ANIWEB-ARG\thttps://cdn.test/800/index.m3u8\n"
+)
+
+
+class ProbeOutputTests(unittest.TestCase):
+    def test_extracts_url_referer_and_subtitles(self):
+        parsed = parse_probe_output(PROBE_OUTPUT)
+        self.assertEqual(parsed["url"], "https://cdn.test/800/index.m3u8")
+        self.assertEqual(parsed["referer"], "https://zokoanime.video/")
+        self.assertEqual(parsed["subtitles"], "https://cdn.test/subs/en.vtt")
+        self.assertEqual(parsed["audio"], "")
+
+    def test_no_probe_lines_means_none(self):
+        self.assertIsNone(parse_probe_output(DEBUG_OUTPUT))
+
+    def test_old_http_referrer_option_is_understood(self):
+        parsed = parse_probe_output("ANIWEB-ARG\t--http-referrer=https://r/\nANIWEB-ARG\thttp://u/v\n")
+        self.assertEqual(parsed["referer"], "https://r/")
+
+    def test_no_detach_flag_is_added_only_on_request(self):
+        self.assertNotIn("--no-detach", build_resolve_command("x", 1))
+        probe_cmd = build_resolve_command("x", 1, no_detach=True)
+        self.assertIn("--no-detach", probe_cmd)
+        self.assertIn("--exit-after-play", probe_cmd)
+        self.assertEqual(probe_cmd[-1], "x")
+
+    def test_resolve_env_can_use_custom_player(self):
+        self.assertEqual(resolve_env({}, player="/x/mpv-probe")["ANI_CLI_PLAYER"], "/x/mpv-probe")
+
+
 class AniCliSourceTests(unittest.TestCase):
     def test_check_reports_missing_binaries(self):
         # which() zamockowane, zeby wynik nie zalezal od tego, co ma maszyna CI.
@@ -148,12 +184,28 @@ class AniCliSourceTests(unittest.TestCase):
             missing = AniCliSource(ani_cli_command="ani-cli").check()
         self.assertIn("ani-cli", missing)
 
-    def test_check_flags_botan_as_hard_dependency(self):
-        # Botan jest wymagany przez ani-cli >= 4.15; brak musi byc widoczny.
-        with mock.patch("ani_runner.shutil.which", side_effect=lambda name: "/usr/bin/ani-cli" if name == "ani-cli" else None):
-            missing = AniCliSource(ani_cli_command="ani-cli").check()
+    def test_check_flags_botan_when_the_script_uses_it(self):
+        # Starsze ani-cli (~4.15) wymagaja botana; brak musi byc widoczny.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "ani-cli"
+            script.write_text("#!/bin/sh\nbotan hash x\n")
+            with mock.patch(
+                "ani_runner.shutil.which",
+                side_effect=lambda name: str(script) if name == "ani-cli" else None,
+            ):
+                missing = AniCliSource(ani_cli_command="ani-cli").check()
         self.assertEqual(len(missing), 1)
         self.assertIn("botan", missing[0])
+
+    def test_check_ignores_botan_when_the_script_does_not_use_it(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "ani-cli"
+            script.write_text("#!/bin/sh\necho nowy ani-cli\n")
+            with mock.patch(
+                "ani_runner.shutil.which",
+                side_effect=lambda name: str(script) if name == "ani-cli" else None,
+            ):
+                self.assertEqual(AniCliSource(ani_cli_command="ani-cli").check(), [])
 
     def test_check_is_empty_when_everything_present(self):
         with mock.patch("ani_runner.shutil.which", return_value="/usr/bin/x"):
@@ -175,6 +227,33 @@ class AniCliSourceTests(unittest.TestCase):
         self.assertEqual(stream.referer, DEFAULT_REFERER)
         self.assertEqual(stream.headers["Referer"], DEFAULT_REFERER)
         self.assertEqual(stream.available_qualities, {"1080": "https://cdn.example.test/1080/v.mp4"})
+
+    def test_resolve_prefers_probe_referer_and_subtitles(self):
+        # Fikcyjne ani-cli, ktore wola "odtwarzacz" tak jak prawdziwe: po
+        # zmiennej ANI_CLI_PLAYER, z argumentami w stylu mpv.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = write_script(
+                Path(tmpdir) / "ani-cli",
+                "#!/bin/sh\n"
+                '"$ANI_CLI_PLAYER" --referrer=https://embed.test/ --sub-file=https://cdn.test/s.vtt '
+                "--force-media-title=T https://cdn.test/v.m3u8\n",
+            )
+            stream = AniCliSource(ani_cli_command=str(script)).resolve("query", 1)
+        self.assertEqual(stream.stream_url, "https://cdn.test/v.m3u8")
+        self.assertEqual(stream.referer, "https://embed.test/")
+        self.assertEqual(stream.headers["Referer"], "https://embed.test/")
+        self.assertEqual(stream.subtitles, "https://cdn.test/s.vtt")
+
+    def test_resolve_falls_back_to_debug_when_probe_yields_nothing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = write_script(
+                Path(tmpdir) / "ani-cli",
+                '#!/bin/sh\n[ "$ANI_CLI_PLAYER" = debug ] || exit 1\n'
+                "echo 'Selected link:'\necho 'https://cdn.test/d.mp4'\n",
+            )
+            stream = AniCliSource(ani_cli_command=str(script)).resolve("query", 1)
+        self.assertEqual(stream.stream_url, "https://cdn.test/d.mp4")
+        self.assertEqual(stream.subtitles, "")
 
     def test_resolve_finds_binary_by_bare_name_on_path(self):
         # Tak wola to server.py: ani_cli_command="ani-cli", bez sciezki.

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Sonda dla ani-cli: ani-cli wola "odtwarzacz" z argumentami --referrer=...,
+# --sub-file=..., --audio-file=... i adresem na koncu (galaz *mpv*, wymaga
+# --no-detach). Zamiast odtwarzac, wypisujemy te argumenty, zeby Ani-Web znal
+# Referer i napisy, ktorych tryb ANI_CLI_PLAYER=debug nie zdradza (docs.md §7).
+# Nazwa pliku MUSI zawierac "mpv" — po tym ani-cli dobiera galaz.
+printf 'ANIWEB-ARG\t%s\n' "$@"

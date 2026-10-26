@@ -12,10 +12,14 @@ import re
 import shutil
 import signal
 import socket
+import shlex
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 from dataclasses import asdict, dataclass
+
+from aniskip import script_opts
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,14 @@ class Capabilities:
     ended_events: bool = False
 
 
+# Wlasny skrypt mpv do przewijania czolowki/zakonczenia (czasy z AniSkip).
+SKIP_SCRIPT = Path(__file__).resolve().parent / "assets" / "aniweb-skip.lua"
+
+
+def skip_script_text():
+    return SKIP_SCRIPT.read_text(encoding="utf-8")
+
+
 class PlayerError(RuntimeError):
     """Blad odtwarzania. Komunikat idzie do UI."""
 
@@ -42,7 +54,7 @@ class PlayerBackend:
     name = "abstract"
     capabilities = Capabilities()
 
-    def play(self, stream_url, headers=None, position=0, title=""):
+    def play(self, stream_url, headers=None, position=0, title="", subtitles="", audio="", skip=None):
         raise NotImplementedError
 
     def pause(self):
@@ -71,7 +83,7 @@ class SimulatedPlayer(PlayerBackend):
     def __init__(self):
         self._state = "idle"
 
-    def play(self, stream_url, headers=None, position=0, title=""):
+    def play(self, stream_url, headers=None, position=0, title="", subtitles="", audio="", skip=None):
         self._state = "playing"
         return self.status()
 
@@ -109,7 +121,7 @@ class AniCliPlayer(PlayerBackend):
     def is_running(self):
         return self.process is not None and self.process.poll() is None
 
-    def play(self, stream_url, headers=None, position=0, title=""):
+    def play(self, stream_url, headers=None, position=0, title="", subtitles="", audio="", skip=None):
         if self.is_running:
             return self.status()
 
@@ -235,7 +247,7 @@ class MpvIpcPlayer(PlayerBackend):
             time.sleep(0.05)
         raise PlayerError(f"mpv nie wystawil socketu IPC w {self.SOCKET_WAIT_SECONDS:.0f}s")
 
-    def _build_args(self, stream_url, headers, position, title):
+    def _build_args(self, stream_url, headers, position, title, subtitles="", audio="", skip=None):
         args = [
             self.mpv_command,
             f"--input-ipc-server={self.ipc_socket}",
@@ -250,10 +262,18 @@ class MpvIpcPlayer(PlayerBackend):
             # -append, a nie lista po przecinkach: wartosci naglowkow moga
             # zawierac przecinki i rozjechalyby parsowanie.
             args.append(f"--http-header-fields-append={key}: {value}")
+        if subtitles:
+            args.append(f"--sub-file={subtitles}")
+        if audio:
+            args.append(f"--audio-file={audio}")
+        opts = script_opts(skip or {})
+        if opts:
+            args.append(f"--script={SKIP_SCRIPT}")
+            args.append(f"--script-opts={opts}")
         args.append(stream_url)
         return args
 
-    def play(self, stream_url, headers=None, position=0, title=""):
+    def play(self, stream_url, headers=None, position=0, title="", subtitles="", audio="", skip=None):
         # Restart zamiast loadfile: deterministyczny, a pozycja startowa
         # przechodzi wtedy przez --start, bez wyscigu z ladowaniem pliku.
         if self.is_running:
@@ -264,7 +284,7 @@ class MpvIpcPlayer(PlayerBackend):
 
         try:
             self.process = subprocess.Popen(
-                self._build_args(stream_url, headers, position, title),
+                self._build_args(stream_url, headers, position, title, subtitles, audio, skip),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -364,12 +384,29 @@ class AndroidIntentPlayer(PlayerBackend):
     KEYCODE_PLAY_PAUSE = 85
     KEYCODE_STOP = 86
 
-    def __init__(self, package="is.xyz.mpv", adb_command="adb", runner=None):
+    # mpv-android nie przyjmuje Referera ani napisow z intentu (#427), wiec tak jak
+    # ani-cli (android_mpv) piszemy je do pliku, ktory uzytkownik raz dolacza w
+    # mpv.conf (`include=/storage/emulated/0/mpv/mpv.config.mp4`) — docs.md §7.
+    # Plik piszemy ZAWSZE (takze pusty), zeby referer z poprzedniego odcinka nie
+    # zostal na nastepny.
+    CONFIG_DIR = "/sdcard/mpv"
+    CONFIG_FILE = "/sdcard/mpv/mpv.config.mp4"
+    # Ta sama sciezka widziana z procesu aplikacji (Termux), bez adb. Dziala, gdy
+    # Termux ma uprawnienie do pamieci wspoldzielonej (termux-setup-storage albo
+    # `pm grant com.termux android.permission.WRITE_EXTERNAL_STORAGE`).
+    LOCAL_CONFIG_FILE = "/storage/emulated/0/mpv/mpv.config.mp4"
+
+    def __init__(self, package="is.xyz.mpv", adb_command="adb", runner=None, local_config_file=None):
         self.package = package
+        self.local_config_file = local_config_file or self.LOCAL_CONFIG_FILE
+        # Ostrzezenie widoczne w UI, gdy konfiguracji nie udalo sie zapisac.
+        self.warning = None
         self.adb_command = adb_command
         # Wstrzykiwalne, zeby dalo sie testowac bez Androida i bez adb.
         self._run = runner if runner is not None else _run_command
         self.started = False
+        self.config_written = False
+        self.config_method = None
         self._started_at = 0.0
         self._last_state = "idle"
 
@@ -406,6 +443,7 @@ class AndroidIntentPlayer(PlayerBackend):
             payload["adb"] = False
         else:
             payload["adb"] = True
+        payload["warning"] = self.warning
         return payload
 
     # --- odtwarzanie ------------------------------------------------------
@@ -426,9 +464,92 @@ class AndroidIntentPlayer(PlayerBackend):
             args += ["--es", "title", title]
         return args
 
-    def play(self, stream_url, headers=None, position=0, title=""):
-        # Naglowkow NIE przekazujemy: mpv-android ich z intentu nie przyjmuje
-        # (mpv-android #427). Referer musi doklejac nasze proxy — docs.md §7.
+    @staticmethod
+    def build_config(headers=None, subtitles="", audio="", skip=None, script_path=""):
+        """Tresc mpv.config.mp4: referrer, napisy, audio, przewijanie (po jednym w linii)."""
+        lines = []
+        referer = (headers or {}).get("Referer")
+        if referer:
+            lines.append(f"referrer={referer}")
+        if subtitles:
+            lines.append(f"sub-file={subtitles}")
+            # Napisy maja byc widoczne od razu, bez grzebania w menu.
+            lines.append("sub-visibility=yes")
+        if audio:
+            lines.append(f"audio-file={audio}")
+        opts = script_opts(skip or {})
+        if opts and script_path:
+            lines.append(f"script={script_path}")
+            lines.append(f"script-opts={opts}")
+        return "".join(line + "\n" for line in lines)
+
+    def _write_config(self, content):
+        """Zapisuje plik konfiguracji; zwraca "direct", "adb" albo None.
+
+        Najpierw bezposrednio (nie zalezy od Wireless debugging, ktory potrafi
+        zgasnac sam), potem przez adb. Gdy zawiedzie jedno i drugie, stary plik
+        zostaje na dysku — a z nim Referer i napisy POPRZEDNIEGO odcinka — dlatego
+        wywolujacy musi to pokazac uzytkownikowi (`self.warning`).
+        """
+        try:
+            os.makedirs(os.path.dirname(self.local_config_file), exist_ok=True)
+            with open(self.local_config_file, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            return "direct"
+        except OSError:
+            pass
+
+        if not self.adb_available:
+            return None
+        script = f"mkdir -p {self.CONFIG_DIR} && printf %s {shlex.quote(content)} > {self.CONFIG_FILE}"
+        try:
+            completed = self._adb_shell([script])
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return "adb" if completed.returncode == 0 else None
+
+    def _ensure_skip_script(self):
+        """Kladzie skrypt Lua obok pliku konfiguracji; zwraca sciezke albo "".
+
+        Sciezka jest taka, jaka widzi mpv-android (ta sama co przy zapisie
+        bezposrednim). Najpierw zapis bezposredni, potem adb.
+        """
+        local_path = os.path.join(os.path.dirname(self.local_config_file), SKIP_SCRIPT.name)
+        try:
+            text = skip_script_text()
+        except OSError:
+            return ""
+        try:
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            with open(local_path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            return local_path
+        except OSError:
+            pass
+        if not self.adb_available:
+            return ""
+        script = (
+            f"mkdir -p {self.CONFIG_DIR} && "
+            f"printf %s {shlex.quote(text)} > {self.CONFIG_DIR}/{SKIP_SCRIPT.name}"
+        )
+        try:
+            completed = self._adb_shell([script])
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return local_path if completed.returncode == 0 else ""
+
+    def play(self, stream_url, headers=None, position=0, title="", subtitles="", audio="", skip=None):
+        # Intent nie niesie Referera ani napisow — ida plikiem (CONFIG_FILE).
+        script_path = self._ensure_skip_script() if script_opts(skip or {}) else ""
+        method = self._write_config(
+            self.build_config(headers, subtitles, audio, skip, script_path)
+        )
+        self.config_method = method
+        self.config_written = method is not None
+        self.warning = None if method else (
+            "Nie udało się zapisać konfiguracji mpv (brak dostępu do pamięci i brak "
+            "adb) — napisy i Referer mogą być z poprzedniego odcinka albo strumień da 403."
+        )
         try:
             completed = self._am_start(self._intent_args(stream_url, position, title))
         except FileNotFoundError as exc:
@@ -515,7 +636,11 @@ _PLAYBACK_STATES = {
 _STATE_RE = re.compile(r"state=PlaybackState\s*\{(?P<body>[^}]*)\}")
 # Lookbehind odcina wylacznie "buffered position=0", ktore inaczej nadpisywaloby
 # prawdziwe position=124500 zerem — w bloku PlaybackState wystepuja OBA.
-_FIELD_RE = re.compile(r"(?<!buffered )(?P<key>state|position|duration)=(?P<value>-?\d+)")
+# Android 14 zapisuje stan jako `state=PLAYING(3)`, starsze wersje jako `state=3`
+# (sprawdzone na HY300: dumpsys media_session). Bierzemy liczbe w obu przypadkach.
+_FIELD_RE = re.compile(
+    r"(?<!buffered )(?P<key>state|position|duration)=(?:[A-Z_]+\()?(?P<value>-?\d+)\)?"
+)
 
 
 def parse_media_session(output, package):
@@ -528,11 +653,15 @@ def parse_media_session(output, package):
     Androida, dlatego parsowanie jest defensywne: szukamy bloku paczki, a w nim
     pierwszego PlaybackState. Wzorowane na bibliotece `androidtv` (docs.md §13).
     """
-    if package not in output:
+    # Kotwica "package=<nazwa>" (linia sesji), nie samo wystapienie nazwy: dumpsys
+    # wspomina paczke tez w "Audio playback ... packages=<nazwa>", a to NIE jest
+    # aktywna sesja. "packages=" nie pasuje do "package=".
+    anchor = re.search(r"package=" + re.escape(package) + r"(?![\w.])", output)
+    if anchor is None:
         return None
 
     # Blok paczki konczy sie tam, gdzie zaczyna sie nastepna sesja.
-    start = output.index(package)
+    start = anchor.start()
     remainder = output[start:]
     next_session = remainder.find("\n  package=", 1)
     block = remainder if next_session == -1 else remainder[:next_session]

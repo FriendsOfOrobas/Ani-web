@@ -82,3 +82,23 @@ Ten dokument opisuje plan wdrożenia projektu Ani-Web na urządzeniach z Android
 ## 9. Uwagi
 
 Na tym etapie nie uruchamiamy jeszcze deploymentu. Celem jest przygotowanie jasnego planu i kolejnych kroków dla przyszłej produkcji.
+
+
+## 10. Stan wdrożenia na HY300 (2026-10-26)
+
+Sprawdzone na Magcubic HY300 Pro+ (Android 14, 1 GB RAM, bez roota):
+
+1. `pkg install python python-pip git curl grep sed gawk patch fzf ncurses-utils android-tools`
+   (przy błędzie `CANNOT LINK` w adb: `apt install --only-upgrade abseil-cpp libc++`),
+   `python -m pip install flask`, ani-cli z git do `$PREFIX/bin`.
+2. `appops set com.termux SYSTEM_ALERT_WINDOW allow` (z adb na komputerze).
+3. Self-adb: na urządzeniu „Pair device with pairing code", w Termuksie
+   `adb pair <ip:port>` + kod, potem `adb connect 127.0.0.1:5555`; serwer startuje z
+   `ANDROID_SERIAL=127.0.0.1:5555` (inaczej adb widzi telefon dwa razy).
+4. mpv-android: `include=/storage/emulated/0/mpv/mpv.config.mp4` w mpv.conf (jednorazowo).
+5. `backend/config.local.json`: `{"host":"0.0.0.0","player":"android-intent","android_player_package":"is.xyz.mpv"}`.
+6. Start: `bash ~/start-aniweb.sh` **z sesji Termuksa** (z `adb shell run-as` `am start` nie działa).
+7. Dostęp w sieci: `http://android.home:8000` (nazwa z DHCP, rozwiązywana przez router).
+
+Wireless debugging potrafi zgasnąć samo — wtedy self-adb (pauza/stan) przestaje działać
+(`/api/status` → `adb:false`), a start odcinka nadal działa.

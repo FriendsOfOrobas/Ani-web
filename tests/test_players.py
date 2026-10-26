@@ -409,6 +409,29 @@ class FakeAdb:
         return [c for c in self.calls if c[:2] == [self.calls[0][0], "shell"]] if self.calls else []
 
 
+class MpvIpcSkipArgsTests(unittest.TestCase):
+    def test_skip_adds_script_and_opts(self):
+        args = MpvIpcPlayer(mpv_command="mpv", ipc_socket="/tmp/s")._build_args(
+            "http://x/v.m3u8", {}, 0, "", skip={"op": (4.0, 94.0)}
+        )
+        self.assertTrue(any(a.startswith("--script=") and a.endswith("aniweb-skip.lua") for a in args))
+        self.assertIn("--script-opts=aniweb_skip-op_start=4,aniweb_skip-op_end=94", args)
+
+    def test_no_skip_no_script(self):
+        args = MpvIpcPlayer(mpv_command="mpv", ipc_socket="/tmp/s")._build_args("u", {}, 0, "")
+        self.assertFalse(any(a.startswith("--script") for a in args))
+
+
+class MpvIpcSubtitleArgsTests(unittest.TestCase):
+    def test_subtitles_and_audio_become_mpv_options(self):
+        args = MpvIpcPlayer(mpv_command="mpv", ipc_socket="/tmp/s")._build_args(
+            "http://x/v.m3u8", {}, 0, "", subtitles="http://x/s.vtt", audio="http://x/a.m4a"
+        )
+        self.assertIn("--sub-file=http://x/s.vtt", args)
+        self.assertIn("--audio-file=http://x/a.m4a", args)
+        self.assertEqual(args[-1], "http://x/v.m3u8")
+
+
 class MediaSessionParsingTests(unittest.TestCase):
     def test_parses_state_position_and_duration(self):
         parsed = parse_media_session(DUMPSYS_PLAYING, "is.xyz.mpv")
@@ -430,6 +453,25 @@ class MediaSessionParsingTests(unittest.TestCase):
     def test_buffering_counts_as_playing(self):
         dump = "  package=p\n  state=PlaybackState {state=6, position=1000}\n"
         self.assertEqual(parse_media_session(dump, "p")["state"], "playing")
+
+    def test_parses_named_state_format_of_android_14(self):
+        # Prawdziwa linia z HY300 (Android 14): nazwa stanu + numer w nawiasie.
+        dump = (
+            "  package=is.xyz.mpv\n"
+            "  state=PlaybackState {state=PLAYING(3), position=7000, buffered position=0, "
+            "speed=1.0, updated=2924058, actions=262918, custom actions=[], "
+            "active item id=-1, error=null}\n"
+        )
+        self.assertEqual(parse_media_session(dump, "is.xyz.mpv"), {"state": "playing", "position": 7})
+        paused = dump.replace("PLAYING(3)", "PAUSED(2)")
+        self.assertEqual(parse_media_session(paused, "is.xyz.mpv")["state"], "paused")
+        stopped = dump.replace("PLAYING(3)", "STOPPED(1)")
+        self.assertEqual(parse_media_session(stopped, "is.xyz.mpv")["state"], "stopped")
+
+    def test_audio_playback_mention_is_not_a_session(self):
+        # Prawdziwy dumpsys wymienia paczke tez w sekcji "Audio playback".
+        dump = "Audio playback (lastly played comes first)\n  uid=10095 packages=is.xyz.mpv \nMedia session config:\n"
+        self.assertIsNone(parse_media_session(dump, "is.xyz.mpv"))
 
     def test_unparseable_block_is_unknown_not_a_crash(self):
         dump = "  package=p\n  jakies inne smieci\n"
@@ -467,7 +509,112 @@ class AndroidIntentPlayerTests(unittest.TestCase):
     def test_play_runs_am_start(self):
         adb = FakeAdb()
         AndroidIntentPlayer(runner=adb).play("http://x/y.mp4")
-        self.assertEqual(adb.calls[0][:2], ["am", "start"])
+        self.assertIn(["am", "start"], [c[:2] for c in adb.calls])
+
+    def test_build_config_has_referrer_and_visible_subtitles(self):
+        content = AndroidIntentPlayer.build_config(
+            {"Referer": "https://zokoanime.video/"}, subtitles="https://cdn/s.vtt"
+        )
+        self.assertEqual(
+            content.splitlines(),
+            [
+                "referrer=https://zokoanime.video/",
+                "sub-file=https://cdn/s.vtt",
+                "sub-visibility=yes",
+            ],
+        )
+
+    def test_build_config_adds_skip_script_and_opts(self):
+        content = AndroidIntentPlayer.build_config(
+            {}, skip={"op": (1.0, 102.0)}, script_path="/storage/emulated/0/mpv/aniweb-skip.lua"
+        )
+        self.assertEqual(
+            content.splitlines(),
+            [
+                "script=/storage/emulated/0/mpv/aniweb-skip.lua",
+                "script-opts=aniweb_skip-op_start=1,aniweb_skip-op_end=102",
+            ],
+        )
+
+    def test_build_config_without_script_path_skips_nothing(self):
+        # Skrypt sie nie zapisal — lepiej bez przewijania niz z nieistniejaca sciezka.
+        self.assertEqual(AndroidIntentPlayer.build_config({}, skip={"op": (1.0, 2.0)}), "")
+
+    def test_play_with_skip_writes_script_and_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "mpv.config.mp4")
+            AndroidIntentPlayer(runner=FakeAdb(adb_ok=False), local_config_file=path).play(
+                "http://x/y.mp4", skip={"ed": (1280.0, 1370.0)}
+            )
+            with open(path, encoding="utf-8") as handle:
+                config = handle.read()
+            script = os.path.join(tmpdir, "aniweb-skip.lua")
+            self.assertTrue(os.path.exists(script))
+            with open(script, encoding="utf-8") as handle:
+                self.assertIn("aniweb_skip", handle.read())
+        self.assertIn(f"script={script}", config)
+        self.assertIn("script-opts=aniweb_skip-ed_start=1280,aniweb_skip-ed_end=1370", config)
+
+    def test_play_without_skip_writes_no_script(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "mpv.config.mp4")
+            AndroidIntentPlayer(runner=FakeAdb(adb_ok=False), local_config_file=path).play("http://x/y.mp4")
+            self.assertFalse(os.path.exists(os.path.join(tmpdir, "aniweb-skip.lua")))
+
+    def test_build_config_is_empty_without_referer_or_subtitles(self):
+        # Pusty plik tez trzeba zapisac — kasuje referer poprzedniego odcinka.
+        self.assertEqual(AndroidIntentPlayer.build_config({"User-Agent": "x"}), "")
+
+    def test_play_writes_config_before_starting_the_player(self):
+        adb = FakeAdb()
+        player = AndroidIntentPlayer(runner=adb, local_config_file="/proc/nie-ma/mpv.config.mp4")
+        player.play(
+            "http://x/y.mp4",
+            headers={"Referer": "https://ref.test/"},
+            subtitles="https://cdn/s.vtt",
+        )
+        kinds = ["am" if c[:2] == ["am", "start"] else "shell" for c in adb.calls if c[0] in ("am", "adb") and c[1] in ("start", "shell")]
+        self.assertEqual(kinds[0], "shell")  # zapis konfiguracji
+        self.assertIn("am", kinds)
+        write = next(c for c in adb.calls if c[:2] == ["adb", "shell"] and "mpv.config.mp4" in c[2])
+        self.assertIn("referrer=https://ref.test/", write[2])
+        self.assertIn("sub-file=https://cdn/s.vtt", write[2])
+        self.assertTrue(player.config_written)
+
+    def test_play_still_starts_without_adb_but_warns_about_stale_config(self):
+        adb = FakeAdb(adb_ok=False)
+        player = AndroidIntentPlayer(runner=adb, local_config_file="/proc/nie-ma/mpv.config.mp4")
+        player.play("http://x/y.mp4", headers={"Referer": "https://ref.test/"})
+        self.assertFalse(player.config_written)
+        self.assertIn("poprzedniego odcinka", player.warning)
+        self.assertEqual(player.describe()["warning"], player.warning)
+        self.assertIn(["am", "start"], [c[:2] for c in adb.calls])
+
+    def test_config_is_written_directly_without_adb_when_possible(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "mpv", "mpv.config.mp4")
+            adb = FakeAdb(adb_ok=False)
+            player = AndroidIntentPlayer(runner=adb, local_config_file=path)
+            player.play(
+                "http://x/y.mp4",
+                headers={"Referer": "https://ref.test/"},
+                subtitles="https://cdn/s.vtt",
+            )
+            with open(path, encoding="utf-8") as handle:
+                content = handle.read()
+        self.assertEqual(player.config_method, "direct")
+        self.assertIsNone(player.warning)
+        self.assertIn("referrer=https://ref.test/", content)
+        self.assertIn("sub-file=https://cdn/s.vtt", content)
+
+    def test_direct_write_overwrites_stale_config_with_empty_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "mpv.config.mp4")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("referrer=https://stary/\nsub-file=https://stare.vtt\n")
+            AndroidIntentPlayer(runner=FakeAdb(), local_config_file=path).play("http://x/y.mp4")
+            with open(path, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "")
 
     def test_failed_am_start_points_at_the_overlay_permission(self):
         # Najczestsza przyczyna na Androidzie 10+ — docs.md §10.

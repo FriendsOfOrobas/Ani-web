@@ -173,6 +173,31 @@ class MetadataServiceTests(unittest.TestCase):
         service.details(1)
         self.assertEqual(provider.details.call_count, 1)
 
+    def test_mal_id_comes_from_anilist_id_mal(self):
+        self.assertEqual(M._meta_from_anilist({**BEBOP_NODE, "idMal": 1}).mal_id, 1)
+        self.assertEqual(M._meta_from_anilist(BEBOP_NODE).mal_id, 0)  # brak = 0
+
+    def test_queries_request_id_mal(self):
+        self.assertIn("idMal", M.SEARCH_QUERY)
+        self.assertIn("idMal", M.DETAILS_QUERY)
+
+    def test_cached_entry_without_mal_id_is_refetched(self):
+        # Wpis sprzed dodania mal_id nie moze blokowac przewijania czolowek na 30 dni.
+        provider = mock.Mock()
+        provider.details.return_value = M._meta_from_anilist({**BEBOP_NODE, "idMal": 1})
+        service = self.service(provider=provider, fallback=None)
+
+        old = M._meta_from_anilist(BEBOP_NODE).as_dict()
+        old.pop("mal_id")
+        service._store([M._meta_from_payload({**old, "mal_id": 0})])
+        with M.transaction(service.db_path) as connection:
+            connection.execute(
+                "UPDATE anime SET payload = ? WHERE anilist_id = 1", (json.dumps(old),)
+            )
+
+        self.assertEqual(service.details(1).mal_id, 1)
+        provider.details.assert_called_once()
+
     def test_fallback_takes_over_when_primary_fails(self):
         primary = mock.Mock()
         primary.search.side_effect = MetadataError("AniList padl")

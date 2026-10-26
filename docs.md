@@ -353,7 +353,66 @@ Ryzyka, które trzeba sprawdzić na sprzęcie:
 `capabilities` (bez pauzy) i stan `unknown` zamiast udawać, że wie co leci.
 Uruchamianie działa wtedy dalej — `am start` nie potrzebuje adb.
 
+**Weryfikacja na sprzęcie (2026-10-26, Magcubic HY300 Pro+, Android 14, bez roota, ARMv7):**
+mpv-android 2026-09-17 (`is.xyz.mpv`, build armeabi-v7a) przez `AndroidIntentPlayer` + adb:
+play z pozycją startową (extras `position`, ms), pauza/wznowienie przez
+`input keyevent 85`, stan i pozycja z `dumpsys media_session`, wykrycie końca
+(`ended`) i `stop` — **działa end-to-end**. Pozycja z mpv płynie podczas grania
+(co kilka sekund), nie tylko przy zmianie stanu — D2 jest dla mpv zbyt pesymistyczne.
+
+Znalezione i naprawione przez test na sprzęcie (240 testów zielonych):
+- Android 14 zapisuje `state=PLAYING(3)`, nie `state=3` — parser zwracał zawsze `unknown`.
+- Nazwa paczki występuje też w sekcji „Audio playback … packages=…"; to nie
+  jest sesja — parser musi kotwiczyć na `package=<nazwa>`.
+
+Pułapki testowe (nie bugi): URL-e z blender.org dają 404; webm z Wikimedii nie
+wspiera seeka po HTTP, więc z `position` kończy się `reason 4` — pliki do testów
+muszą być seekowalnymi mp4. VLC nie zweryfikowany (pierwotny wniosek o jego
+zepsuciu wynikał z 404 w moim URL-u, nie z VLC; D1 nadal zaleca mpv-android).
+
+**Test pełnego przebiegu w Termuksie na HY300 (2026-10-26):**
+- Środowisko: Python 3.14, Flask 3.1.3, ani-cli 5.1.6 (git), android-tools (adb)
+  — wszystko instaluje się z `pkg`; 241 testów przechodzi na urządzeniu (~16 s).
+  `pkg install android-tools` wymagało też `apt install --only-upgrade abseil-cpp libc++`
+  (niezgodność wersji w repo Termuksa).
+- Self-adb: `adb pair` kodem + `adb connect 127.0.0.1:5555`, potem
+  `ANDROID_SERIAL=127.0.0.1:5555` (ten sam telefon widnieje też jako
+  `emulator-5554`, bez zmiennej adb zgłasza „more than one device").
+- Wymagane: `appops set com.termux SYSTEM_ALERT_WINDOW allow`. `am start` działa
+  tylko z prawdziwej sesji Termuksa (nie z `adb shell run-as`, domena `runas_app`).
+- ani-cli 5.x nie używa Botana (czek `botan` w `AniCliSource.check()` poprawiony:
+  wymagany tylko, gdy skrypt ani-cli go wymienia) i ma nowe źródło (hianime/zoko).
+- **Referer:** `ANI_CLI_PLAYER=debug` nie zwraca referera, a CDN daje 403 bez
+  niego (mpv-android: `HTTP error 403`, stream kończy się od razu). ani-cli 5.x
+  sam rozwiązuje to dla mpv-android przez plik `/storage/emulated/0/mpv/mpv.config.mp4`
+  z `referrer=…` + `include=` w `mpv.conf` aplikacji. To prostsza droga niż proxy
+  z §7, ale wymaga znajomości `refr` (host embedu) i dostępu do /sdcard.
+  **Zweryfikowane na HY300:** `referrer=https://zokoanime.video/` w
+  `/sdcard/mpv/mpv.config.mp4` + `include=` w `mpv.conf` → mpv-android gra HLS
+  (PLAYING, pozycja płynie), bez tego 403. `refr` da się wyciągnąć z ani-cli,
+  podstawiając jako `ANI_CLI_PLAYER` skrypt o nazwie zawierającej „mpv" i
+  uruchamiając z `--no-detach` — dostaje `--referrer=…`, `--sub-file=…` i URL.
+  **Wdrożone (2026-10-26):** `backend/mpv-probe` + `AniCliSource.resolve` (z zapasem na tryb
+  `debug`) wyciągają Referer, napisy i audio; `AndroidIntentPlayer` zapisuje
+  `/sdcard/mpv/mpv.config.mp4` (referrer, sub-file, sub-visibility=yes) przez adb
+  PRZED `am start` — zawsze, nawet pusty, żeby Referer poprzedniego odcinka nie
+  został. Zweryfikowane na HY300: odcinek Naruto gra z napisami (przebieg
+  /api/play → ani-cli → plik → mpv). **Jednorazowo** użytkownik wpisuje w mpv-android
+  (Settings → Advanced → Edit mpv.conf): `include=/storage/emulated/0/mpv/mpv.config.mp4`.
+- **Konfiguracja mpv bez adb (2026-10-26):** `AndroidIntentPlayer` zapisuje plik
+  najpierw bezpośrednio (Termux ma `WRITE_EXTERNAL_STORAGE`), dopiero potem przez adb;
+  gdy oba zawiodą, snapshot niesie `warning`, a UI go pokazuje. Zweryfikowane
+  przy rozłączonym adb. Frontend: jedno połączenie SSE (zamykane przy ukryciu karty,
+  reconnect z backoffem), seed pierwszej ramki bez fałszywego „następny odcinek?",
+  timeouty (10 s; 120 s dla /api/play), jedna blokada startu odtwarzania, uid w
+  ciasteczku ustalany na /api/status.
+- **Obciążenie przy graniu HLS (HY300, 1 GB):** mpv RES ~213 MB, ~31% jednego rdzenia
+  (z 400%); serwer Ani-Web RES ~6–27 MB, ~0,2% CPU; MemAvailable 271 MB, swap wolny 434 MB.
+- Zasoby (1 GB RAM, `low_ram=true`): MemAvailable 320 MB → 305 MB po starcie
+  serwera (python RSS ~27 MB, ~0% CPU w spoczynku). Swap już w ~50%.
+
 ### D6 — Kwestie otwarte
+- (odpowiedź 2026-10-26: Magcubic HY300 Pro+, Android 14, bez roota, Kodi nie sprawdzano)
 - Który konkretnie box i wersja Androida? Bez tego nie da się ocenić, czy
   self-adb będzie stabilny — a to decyduje, czy Stage 2 wchodzi w ogóle.
 - Czy urządzenie jest zrootowane? Jeśli tak, **cała §2 przestaje obowiązywać**:
