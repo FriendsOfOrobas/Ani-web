@@ -60,8 +60,11 @@ const ui = {
   endedClose: el("ended-close"),
 
   setAutoplay: el("set-autoplay"),
+  setSkip: el("set-skip"),
 
   nowbar: el("nowbar"),
+  conn: el("conn"),
+  adbHint: el("adb-hint"),
   stateDot: el("state-dot"),
   nowTitle: el("now-title"),
   nowMeta: el("now-meta"),
@@ -103,6 +106,7 @@ let capabilities = {};
 let currentDetail = null;
 let defaultQuality = "1080";
 let autoplayNext = false;
+let skipIntro = false;
 // Ostatnio odtwarzane — pytanie po odcinku musi wiedziec, co wlaczyc dalej,
 // a `current` jest wtedy juz wyczyszczone przez backend.
 let lastPlayed = null;
@@ -130,8 +134,22 @@ function formatTime(seconds) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-async function api(path, options) {
-  const response = await fetch(path, options);
+// Zwykle wywolania maja krotki limit; start odtwarzania moze trwac dlugo
+// (ani-cli + sonda + ewentualny powrot do trybu debug na slabym urzadzeniu).
+const API_TIMEOUT_MS = 10000;
+const PLAY_TIMEOUT_MS = 120000;
+
+async function api(path, options, timeoutMs = API_TIMEOUT_MS) {
+  let response;
+  try {
+    response = await fetch(path, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    // Surowe "Failed to fetch" nic nie mowi uzytkownikowi z telefonu.
+    if (err.name === "AbortError" || err.name === "TimeoutError") {
+      throw new Error("Serwer nie odpowiedział w czasie — spróbuj ponownie.");
+    }
+    throw new Error("Brak połączenia z serwerem.");
+  }
   let data = {};
   try {
     data = await response.json();
@@ -146,15 +164,21 @@ async function api(path, options) {
   return data;
 }
 
-const post = (path, body) =>
-  api(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || {}),
-  });
+const post = (path, body, timeoutMs) =>
+  api(
+    path,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    },
+    timeoutMs
+  );
 
+// Przyciski ze zmienna etykieta (np. Pauza/Wznow) trzymaja ja w data-label,
+// zeby withBusy nie przywrocil starej po zmianie stanu.
 async function withBusy(button, action) {
-  const label = button.textContent;
+  const label = button.dataset.label ?? button.textContent;
   button.disabled = true;
   showError("");
   try {
@@ -163,7 +187,22 @@ async function withBusy(button, action) {
     showError(err.message);
   } finally {
     button.disabled = false;
-    button.textContent = label;
+    button.textContent = button.dataset.label ?? label;
+  }
+}
+
+// Jedno odtwarzanie naraz: Odtworz, Nastepny, Znowu, odtwarzanie po tytule i
+// autoplay moga sie zbiec (np. dwie ramki "ended") i dwa razy uderzyc w /api/play.
+let playInFlight = false;
+
+async function guardedPlay(action) {
+  if (playInFlight) throw new Error("Odtwarzanie już się uruchamia…");
+  playInFlight = true;
+  userStopped = false;
+  try {
+    return await action();
+  } finally {
+    playInFlight = false;
   }
 }
 
@@ -185,9 +224,17 @@ function goTo(name) {
   show(name);
 }
 
+// Ostatnio kliknieta karta: po "Wroc" fokus (klawiatura, pilot, czytnik) ma
+// wrocic tam, skad uzytkownik przyszedl, a nie na poczatek strony.
+let lastCardButton = null;
+
 ui.navBack.addEventListener("click", () => {
   screenStack.pop();
-  show(screenStack[screenStack.length - 1] || "home");
+  const target = screenStack[screenStack.length - 1] || "home";
+  show(target);
+  if (target === "home" && lastCardButton && lastCardButton.isConnected) {
+    lastCardButton.focus();
+  }
 });
 
 ui.navSettings.addEventListener("click", () => goTo("settings"));
@@ -201,18 +248,22 @@ function animeCard(item, extra) {
   const button = document.createElement("button");
   button.className = "card-button";
   button.type = "button";
-  button.addEventListener("click", () => openDetail(item.anilist_id));
+  button.addEventListener("click", () => {
+    lastCardButton = button;
+    openDetail(item.anilist_id);
+  });
 
   if (item.cover) {
     const img = document.createElement("img");
     img.src = item.cover;
     img.alt = "";
     img.loading = "lazy";
+    img.decoding = "async";
     button.append(img);
   } else {
     const placeholder = document.createElement("span");
     placeholder.className = "cover-placeholder";
-    placeholder.textContent = "?";
+    placeholder.textContent = item.title;
     button.append(placeholder);
   }
 
@@ -242,14 +293,19 @@ function describeAnime(item) {
 
 // --- szukanie -------------------------------------------------------------
 
+// Numer zapytania: wolna odpowiedz na "nar" nie moze nadpisac wyniku "naruto".
+let searchSeq = 0;
+
 ui.searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const query = ui.search.value.trim();
   if (!query) return;
 
   return withBusy(ui.searchForm.querySelector("button"), async () => {
+    const seq = ++searchSeq;
     ui.homeHint.textContent = "Szukam…";
     const data = await api(`/api/anime?q=${encodeURIComponent(query)}`);
+    if (seq !== searchSeq) return;
     ui.resultsList.replaceChildren(...data.results.map((item) => animeCard(item)));
     ui.resultsSection.hidden = data.results.length === 0;
     ui.homeHint.textContent = data.results.length
@@ -280,8 +336,14 @@ function renderResume(resume, entry) {
   }
 }
 
+// Numer otwarcia: dwa szybkie klikniecia kart nie moga zostawic widoku jednego
+// anime z przyciskiem Odtworz wskazujacym na drugie.
+let detailSeq = 0;
+
 async function openDetail(anilistId) {
+  const seq = ++detailSeq;
   goTo("detail");
+  ui.detailTitle.focus();
   currentDetail = null;
   ui.detailTitle.textContent = "Ładowanie…";
   ui.detailFacts.textContent = "";
@@ -292,6 +354,7 @@ async function openDetail(anilistId) {
 
   try {
     const meta = await api(`/api/anime/${anilistId}`);
+    if (seq !== detailSeq) return;
     currentDetail = meta;
 
     ui.detailTitle.textContent = meta.title;
@@ -307,21 +370,34 @@ async function openDetail(anilistId) {
     ui.detailEpisode.max = meta.episodes || "";
 
     const history = await api(`/api/history/${anilistId}`);
+    if (seq !== detailSeq) return;
     ui.detailForget.hidden = !history.entry;
     renderResume(meta.resume, history.entry);
   } catch (err) {
+    if (seq !== detailSeq) return;
     showError(err.message);
     ui.detailTitle.textContent = "Nie udało się wczytać";
   }
 }
 
-async function playEpisode({ anilistId, episode, quality, position = 0, title, totalEpisodes }) {
-  const snapshot = await post("/api/play", {
-    anilist_id: anilistId,
-    episode,
-    quality: quality || defaultQuality,
-    position,
-  });
+function playEpisode({ anilistId, episode, quality, position = 0, title, totalEpisodes }) {
+  return guardedPlay(() =>
+    startEpisode({ anilistId, episode, quality, position, title, totalEpisodes })
+  );
+}
+
+async function startEpisode({ anilistId, episode, quality, position, title, totalEpisodes }) {
+  const snapshot = await post(
+    "/api/play",
+    {
+      anilist_id: anilistId,
+      episode,
+      quality: quality || defaultQuality,
+      position,
+      skip_intro: skipIntro,
+    },
+    PLAY_TIMEOUT_MS
+  );
   lastPlayed = {
     anilistId,
     episode,
@@ -352,6 +428,8 @@ ui.detailPlay.addEventListener("click", () =>
 
 ui.detailForget.addEventListener("click", () =>
   withBusy(ui.detailForget, async () => {
+    // Przycisk leży tuz pod "Odtworz", pod kciukiem — bez pytania latwo o pomylke.
+    if (!window.confirm("Usunąć to anime z historii oglądania?")) return;
     await api(`/api/history/${currentDetail.anilist_id}`, { method: "DELETE" });
     ui.detailForget.hidden = true;
     ui.detailResume.textContent = "";
@@ -396,12 +474,18 @@ ui.directPlay.addEventListener("click", () =>
       showError("Podaj tytuł.");
       return;
     }
-    render(
-      await post("/api/play", {
-        query,
-        episode: Number(ui.directEpisode.value) || 1,
-        quality: defaultQuality,
-      })
+    await guardedPlay(async () =>
+      render(
+        await post(
+          "/api/play",
+          {
+            query,
+            episode: Number(ui.directEpisode.value) || 1,
+            quality: defaultQuality,
+          },
+          PLAY_TIMEOUT_MS
+        )
+      )
     );
   })
 );
@@ -424,6 +508,9 @@ function showEndedPrompt(finished) {
     : `${lastPlayed.title} — następny: ${lastPlayed.episode + 1}.`;
   ui.endedNext.hidden = Boolean(last);
   ui.endedPrompt.hidden = false;
+  // Fokus na akcji wiodacej, zeby pilot/klawiatura nie musialy tabowac przez
+  // cala strone do pytania, ktore wlasnie sie pojawilo.
+  (last ? ui.endedReplay : ui.endedNext).focus({ preventScroll: true });
 
   // Autoplay jest opcja, nie domyslna: przy zamknieciu odtwarzacza z pilota
   // automatyczne wlaczanie kolejnego odcinka byloby wbrew intencji.
@@ -479,7 +566,12 @@ function applyCapabilities(caps) {
   }
 }
 
-function render(data) {
+// `seed`: pierwsza ramka po (ponownym) polaczeniu. Ustawia punkt odniesienia, ale
+// nie moze wywolac pytania "nastepny odcinek?" o odcinek, ktory skonczyl sie,
+// gdy telefon spal.
+let backendErrorShown = false;
+
+function render(data, { seed = false } = {}) {
   if (!data) return;
   if (data.capabilities) applyCapabilities(data.capabilities);
 
@@ -488,7 +580,7 @@ function render(data) {
 
   // Przejscie z grania w koniec = odcinek sie skonczyl albo odtwarzacz zamknieto.
   // Backend zglasza to sam, z watku dozorujacego — nie trzeba nic klikac.
-  const previousState = lastState;
+  const previousState = seed ? null : lastState;
   lastState = state;
   if (ACTIVE_STATES.has(previousState) && FINISHED_STATES.has(state)) {
     if (userStopped) {
@@ -514,7 +606,28 @@ function render(data) {
     ui.nowMeta.textContent = data.player ? `odtwarzacz: ${data.player}` : "";
   }
 
-  if (data.last_error) showError(data.last_error);
+  // Etykieta zalezy od stanu: "Pauza" gdy gra, "Wznów" gdy wstrzymane.
+  const pauseLabel = state === "paused" ? "Wznów" : "Pauza";
+  ui.pause.dataset.label = pauseLabel;
+  if (!ui.pause.disabled) ui.pause.textContent = pauseLabel;
+  ui.pause.setAttribute("aria-pressed", String(state === "paused"));
+
+  // Wireless debugging potrafi zgasnac sam; bez niego pauza i stan nie dzialaja.
+  const noAdb = data.adb === false && data.player === "android-intent";
+  ui.adbHint.textContent = data.warning
+    ? data.warning
+    : "Pauza i stan niedostępne — włącz Wireless debugging na urządzeniu.";
+  ui.adbHint.hidden = !(noAdb || data.warning);
+
+  // Blad z backendu pokazujemy i tez gasimy, gdy backend go zwolnil — inaczej
+  // stary blad wisialby do przeladowania strony.
+  if (data.last_error) {
+    showError(data.last_error);
+    backendErrorShown = true;
+  } else if (backendErrorShown) {
+    showError("");
+    backendErrorShown = false;
+  }
 }
 
 ui.pause.addEventListener("click", () =>
@@ -525,7 +638,13 @@ ui.stop.addEventListener("click", () =>
   withBusy(ui.stop, async () => {
     userStopped = true;
     hideEndedPrompt();
-    render(await post("/api/stop"));
+    try {
+      render(await post("/api/stop"));
+    } catch (err) {
+      // Stop sie nie udal — flaga nie moze zjesc nastepnego prawdziwego konca.
+      userStopped = false;
+      throw err;
+    }
     loadContinue();
   })
 );
@@ -543,6 +662,10 @@ function applySettings(settings) {
   if (settings.autoplay_next !== undefined) {
     autoplayNext = Boolean(settings.autoplay_next);
     ui.setAutoplay.checked = autoplayNext;
+  }
+  if (settings.skip_intro !== undefined) {
+    skipIntro = Boolean(settings.skip_intro);
+    ui.setSkip.checked = skipIntro;
   }
 }
 
@@ -565,8 +688,13 @@ ui.settingsSave.addEventListener("click", () =>
     const settings = {
       quality: ui.setQuality.value,
       autoplay_next: ui.setAutoplay.checked,
+      skip_intro: ui.setSkip.checked,
     };
-    localStorage.setItem(LOCAL_KEY, JSON.stringify(settings));
+    try {
+      localStorage.setItem(LOCAL_KEY, JSON.stringify(settings));
+    } catch {
+      // Tryb prywatny / pelna kwota — zapis na serwerze i tak ma sie wykonac.
+    }
     applySettings(settings);
     ui.settingsHint.textContent = "Zapisano lokalnie…";
     await post("/api/settings", settings);
@@ -576,33 +704,86 @@ ui.settingsSave.addEventListener("click", () =>
 
 // --- strumien zdarzen -----------------------------------------------------
 
-function connectEvents() {
-  const events = new EventSource("/api/events");
+// Dokladnie jedno polaczenie naraz. Serwer trzyma watek na kazdego klienta SSE,
+// a urzadzenie ma 1 GB RAM — uspiony telefon albo ukryta karta nie moga
+// zostawiac po sobie zywych polaczen (docs.md D4).
+let events = null;
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+const RECONNECT_MAX_MS = 30000;
 
-  events.addEventListener("message", (event) => {
+function setConnection(ok) {
+  ui.conn.hidden = ok;
+  if (!ok) ui.stateDot.dataset.state = "offline";
+}
+
+function closeEvents() {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  if (events) {
+    events.close();
+    events = null;
+  }
+}
+
+function connectEvents() {
+  closeEvents();
+  // Pierwsza ramka na nowym polaczeniu tylko ustawia punkt odniesienia.
+  let first = true;
+  const source = new EventSource("/api/events");
+  events = source;
+
+  source.addEventListener("open", () => {
+    reconnectDelay = 1000;
+    setConnection(true);
+  });
+
+  source.addEventListener("message", (event) => {
     try {
-      render(JSON.parse(event.data));
+      render(JSON.parse(event.data), { seed: first });
+      first = false;
     } catch {
       // Uszkodzona klatka nie moze zabic strumienia.
     }
   });
 
-  events.addEventListener("error", () => {
-    // EventSource sam wznawia; pokazujemy tylko, ze stan jest nieaktualny.
-    ui.stateDot.dataset.state = "offline";
+  source.addEventListener("error", () => {
+    setConnection(false);
+    // Przy trwalym bledzie (CLOSED) przegladarka juz nie probuje — robimy to sami,
+    // z rosnacym odstepem. Przy CONNECTING wznawia sama.
+    if (source.readyState === EventSource.CLOSED && events === source) {
+      source.close();
+      events = null;
+      reconnectTimer = setTimeout(connectEvents, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
+    }
   });
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    closeEvents();
+  } else {
+    connectEvents();
+  }
+});
+// Karta odlozona do pamieci podrecznej (bfcache) nie wywola visibilitychange.
+window.addEventListener("pagehide", closeEvents);
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) connectEvents();
+});
 
 // --- start ----------------------------------------------------------------
 
 (async function start() {
   show("home");
+  // Status najpierw: ta odpowiedz ustala ciasteczko z uid, zanim ruszy reszta.
+  // Dalej rownolegle — wolne ustawienia nie opozniaja historii ani strumienia.
   try {
-    render(await api("/api/status"));
+    render(await api("/api/status"), { seed: true });
   } catch (err) {
     showError(`Backend nie odpowiada: ${err.message}`);
   }
-  await loadSettings();
-  await loadContinue();
+  await Promise.allSettled([loadSettings(), loadContinue()]);
   connectEvents();
 })();

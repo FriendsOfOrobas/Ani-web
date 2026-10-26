@@ -1,39 +1,72 @@
-/* Mobile-first. Telefon jest pilotem, wiec cele dotykowe >= 44px. */
+/* Ani-Web: pilot do projektora. Uzywany w ciemnym pokoju, jedna reka, kciukiem.
+   Ciemny atrament + jeden akcent „lampa" — zarezerwowany dla tego, co sie dzieje
+   (akcja glowna, stan „gra"). Reszta jest neutralna, zeby okladki mialy kolor. */
+
+/* Font serwowany lokalnie (SIL OFL, fonts/LICENSE.txt): dziala bez internetu i daje
+   ten sam wyglad na kazdym telefonie, zamiast losowego fontu systemowego. */
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("fonts/bricolage-latin-ext.woff2") format("woff2");
+  font-weight: 200 800;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("fonts/bricolage-latin.woff2") format("woff2");
+  font-weight: 200 800;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
 
 :root {
-  --bg: #0f1116;
-  --bg-elevated: #161a21;
-  --card: #1a1f27;
-  --card-hover: #202632;
-  --line: #262d38;
-  --text: #e9ecf1;
-  --muted: #8e97a6;
-  --accent: #6d8dff;
-  --accent-strong: #8aa4ff;
-  --accent-dim: rgba(109, 141, 255, 0.14);
-  --ok: #45c98a;
+  color-scheme: dark;
+  --bg: #0c0e13;
+  --bg-elevated: #12151c;
+  --card: #151922;
+  --card-hover: #1b2029;
+  --line: #252b38;
+  --text: #eef0f4;
+  --muted: #9ba4b6;
+  /* Lampa projektora. Ciemny tekst na niej: 9.7:1 (--on-accent). */
+  --accent: #f0b04a;
+  --accent-strong: #ffc56b;
+  --accent-dim: rgba(240, 176, 74, 0.22);
+  --on-accent: #1a1204;
+  --ok: #58c99a;
   --warn: #e5b84c;
-  --err: #ec5f57;
-  --radius: 14px;
-  --radius-sm: 10px;
-  --shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
-  --shadow-soft: 0 2px 10px rgba(0, 0, 0, 0.25);
+  --err: #ff7a70;
+  /* Hierarchia, nie jeden promien na wszystko: panele > pola > plakaty. */
+  --radius: 20px;
+  --radius-sm: 12px;
+  --radius-poster: 8px;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  --shadow-soft: none;
+  --font: "Bricolage Grotesque", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f2f4f8;
+    color-scheme: light;
+    --bg: #f3f5f9;
     --bg-elevated: #ffffff;
     --card: #ffffff;
     --card-hover: #f7f9fc;
     --line: #dde2ea;
-    --text: #161a21;
-    --muted: #626b7a;
-    --accent: #3f63e0;
-    --accent-strong: #2f4fc4;
-    --accent-dim: rgba(63, 99, 224, 0.1);
-    --shadow: 0 8px 28px rgba(20, 30, 60, 0.12);
-    --shadow-soft: 0 1px 6px rgba(20, 30, 60, 0.08);
+    --text: #171a21;
+    --muted: #586174;
+    /* Ciemny bursztyn: bialy tekst 5.4:1, element na tle 5.0:1. */
+    --accent: #9a5b00;
+    --accent-strong: #7d4900;
+    --accent-dim: rgba(154, 91, 0, 0.14);
+    --on-accent: #ffffff;
+    --err: #c2362d;
+    --shadow: 0 10px 30px rgba(20, 30, 60, 0.14);
   }
 }
 
@@ -41,19 +74,31 @@
   box-sizing: border-box;
 }
 
+/* Atrybut `hidden` przegrywa z kazdym `display:` ustawionym w CSS (np. flex na
+   .nowbar i .ended-prompt) — bez tej reguly ukryte elementy byly widoczne. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   padding: 0 1rem 2rem;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font: 450 16px/1.5 var(--font);
   -webkit-text-size-adjust: 100%;
 }
 
+button,
+input,
+select {
+  font-family: inherit;
+}
+
 .topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 1rem;
   padding: 0.85rem 1rem;
   margin: 0 -1rem 0.5rem;
@@ -66,19 +111,22 @@ body {
 }
 
 .topbar h1 {
+  grid-column: 2;
   margin: 0;
-  font-size: 1.05rem;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  /* Tytul zostaje wysrodkowany, mimo ze przyciski po bokach maja rozne szerokosci. */
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  pointer-events: none;
+  font-size: 1.2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* Przyciski po bokach trzymaja swoje kolumny, wiec tytul jest srodkiem naprawde. */
+.topbar > :first-child {
+  grid-column: 1;
+  justify-self: start;
 }
 
 .topbar > :last-child {
-  margin-left: auto;
+  grid-column: 3;
+  justify-self: end;
 }
 
 main {
@@ -97,7 +145,9 @@ main {
 
 .card h2 {
   margin: 0 0 0.5rem;
-  font-size: 1rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 label {
@@ -156,15 +206,20 @@ button:focus-visible {
   margin-top: 1rem;
 }
 
+/* Pierwszy wiersz panelu: padding panelu wystarcza, bez dodatkowego odstepu. */
+.card > .row:first-child .field label {
+  margin-top: 0;
+}
+
 button {
   min-height: 48px;
   padding: 0 1.1rem;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: 999px;
   background: var(--bg-elevated);
   color: var(--text);
   font-size: 0.95rem;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
 }
@@ -188,9 +243,8 @@ button.primary {
   margin-top: 1.25rem;
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
-  font-weight: 600;
-  box-shadow: 0 2px 12px var(--accent-dim);
+  color: var(--on-accent);
+  font-weight: 700;
 }
 
 button.primary:hover:not([disabled]) {
@@ -237,8 +291,9 @@ button.ghost {
 }
 
 .dot[data-state="playing"] {
-  background: var(--ok);
-  animation: pulse 2s ease-in-out infinite;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-dim), 0 0 14px 2px var(--accent-dim);
+  animation: pulse 2.4s ease-in-out infinite;
 }
 
 .dot[data-state="starting"] {
@@ -252,11 +307,13 @@ button.ghost {
 
 @media (prefers-reduced-motion: reduce) {
   .dot { animation: none !important; }
+  .ended-prompt { animation: none !important; }
   * { transition: none !important; }
 }
 
 .dot[data-state="paused"] {
-  background: var(--warn);
+  background: transparent;
+  border: 2px solid var(--muted);
 }
 
 .dot[data-state="offline"],
@@ -338,6 +395,11 @@ button.ghost {
   margin-bottom: 1.25rem;
 }
 
+/* "Kontynuuj" jest nad szukaniem — odstep miedzy sekcja a polem. */
+#continue-section {
+  margin-bottom: 1.25rem;
+}
+
 .searchbar input {
   flex: 1;
   min-width: 0;
@@ -350,11 +412,10 @@ button.compact {
 }
 
 .section-title {
-  margin: 0 0 0.6rem;
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
+  margin: 0 0 0.7rem;
+  font-size: 1.2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
 .cards {
@@ -387,23 +448,30 @@ button.compact {
   width: 100%;
   aspect-ratio: 2 / 3;
   object-fit: cover;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-poster);
   background: var(--card);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow-soft);
-  transition: transform 0.16s ease, box-shadow 0.16s ease;
+  transition: transform 0.16s ease;
 }
 
-.card-button:hover img {
-  transform: translateY(-3px);
-  box-shadow: var(--shadow);
+@media (hover: hover) {
+  .card-button:hover img {
+    transform: translateY(-3px);
+  }
 }
 
+/* Brak okladki: tytul zlozony wielka czcionka zamiast pustego pola ze znakiem "?". */
 .cover-placeholder {
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: flex-end;
+  padding: 0.7rem;
   color: var(--muted);
-  font-size: 1.5rem;
+  font-size: 1.15rem;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .card-button:active img {
@@ -428,7 +496,8 @@ button.compact {
 }
 
 .card-caption strong {
-  font-size: 0.9rem;
+  font-size: 0.92rem;
+  font-weight: 700;
   line-height: 1.25;
   /* Dwie linie tytulu, resztę ucinamy — karty muszą trzymać równy rytm siatki. */
   display: -webkit-box;
@@ -455,8 +524,7 @@ button.compact {
   flex: none;
   aspect-ratio: 2 / 3;
   object-fit: cover;
-  border-radius: 10px;
-  border: 1px solid var(--line);
+  border-radius: var(--radius-poster);
 }
 
 .detail-body {
@@ -465,8 +533,10 @@ button.compact {
 
 .detail-body h2 {
   margin: 0 0 0.3rem;
-  font-size: 1.15rem;
-  line-height: 1.25;
+  font-size: 1.4rem;
+  font-weight: 800;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
 }
 
 .facts {
@@ -496,12 +566,14 @@ button.danger {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 0.75rem;
   max-width: 32rem;
   margin: 1rem auto 0;
   padding: 0.7rem 0.85rem;
-  background: color-mix(in srgb, var(--card) 92%, transparent);
-  backdrop-filter: blur(10px);
+  /* Telefony z wycieciem/gestami: pasek nie moze wchodzic pod wskaznik systemu. */
+  padding-bottom: calc(0.7rem + env(safe-area-inset-bottom, 0px));
+  background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -521,7 +593,8 @@ button.danger {
 }
 
 .nowbar-text strong {
-  font-size: 0.9rem;
+  font-size: 1.02rem;
+  font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -532,16 +605,50 @@ button.danger {
   font-size: 0.78rem;
 }
 
+/* Dwa wiersze z zamiarem: tytul i stan nad pelnoszerokimi sterowaniami, zeby kciuk
+   trafial bez celowania. Pauza rosnie, Stop zostaje obok. */
 .nowbar-actions {
   display: flex;
-  gap: 0.5rem;
-  flex: none;
+  gap: 0.6rem;
+  flex: 1 1 100%;
+}
+
+.nowbar-actions #pause {
+  flex: 1;
 }
 
 .nowbar-actions button {
-  min-height: 40px;
-  padding: 0 0.8rem;
-  font-size: 0.9rem;
+  min-height: 52px;
+  min-width: 5rem;
+  padding: 0 1.1rem;
+  font-size: 1rem;
+}
+
+/* Glowna kontrolka (Pauza/Wznow) swieci lampa; Stop zostaje cichy. */
+.nowbar-actions #pause {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+
+/* Komunikaty o polaczeniu i o braku adb: widoczne tekstem, nie samym kolorem. */
+.conn,
+.adb-hint {
+  max-width: 32rem;
+  margin: 0.5rem auto 0;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.88rem;
+  color: var(--text);
+  background: color-mix(in srgb, var(--warn) 18%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line));
+  border-radius: var(--radius-sm);
+}
+
+.adb-hint {
+  flex: 1 0 100%;
+  order: 3;
+  margin: 0;
 }
 
 /* --- pole wyboru w ustawieniach --- */
@@ -577,8 +684,8 @@ button.danger {
   max-width: 32rem;
   margin: 1rem auto 0;
   padding: 0.8rem 0.9rem;
-  background: color-mix(in srgb, var(--accent) 16%, var(--card));
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 14%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   animation: rise 0.22s ease-out;
@@ -595,7 +702,8 @@ button.danger {
 }
 
 .ended-text strong {
-  font-size: 0.92rem;
+  font-size: 1rem;
+  font-weight: 700;
 }
 
 .ended-text small {
@@ -614,13 +722,13 @@ button.danger {
 }
 
 .ended-actions button {
-  min-height: 40px;
-  padding: 0 0.8rem;
-  font-size: 0.88rem;
+  min-height: 48px;
+  padding: 0 0.9rem;
+  font-size: 0.92rem;
 }
 
 .ended-actions .ghost {
-  min-width: 40px;
+  min-width: 48px;
   padding: 0 0.5rem;
 }
 

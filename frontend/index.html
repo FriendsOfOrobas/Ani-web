@@ -14,32 +14,35 @@
       chowa app.js na podstawie capabilities z /api/status.
     -->
     <header class="topbar">
-      <button id="nav-back" class="ghost" type="button" hidden>‹ Wróć</button>
+      <button id="nav-back" class="ghost" type="button" hidden>Wróć</button>
       <h1>Ani-Web</h1>
       <button id="nav-settings" class="ghost" type="button">Ustawienia</button>
     </header>
 
+    <p id="conn" class="conn" role="status" hidden>
+      Utracono połączenie z serwerem — łączę ponownie…
+    </p>
     <p id="error" class="error" role="alert" hidden></p>
 
     <main>
       <!-- ekran glowny: kontynuuj + szukanie -->
       <section id="screen-home" class="screen">
-        <form id="search-form" class="searchbar" autocomplete="off">
-          <input id="search" type="search" placeholder="Szukaj anime…" enterkeyhint="search" />
-          <button class="primary compact" type="submit">Szukaj</button>
-        </form>
-
         <section id="continue-section" hidden>
           <h2 class="section-title">Kontynuuj</h2>
           <ul id="continue-list" class="cards"></ul>
         </section>
+
+        <form id="search-form" class="searchbar" autocomplete="off">
+          <input id="search" type="search" placeholder="Szukaj anime…" aria-label="Szukaj anime" enterkeyhint="search" />
+          <button class="primary compact" type="submit">Szukaj</button>
+        </form>
 
         <section id="results-section" hidden>
           <h2 class="section-title">Wyniki</h2>
           <ul id="results-list" class="cards"></ul>
         </section>
 
-        <p id="home-hint" class="hint"></p>
+        <p id="home-hint" class="hint" aria-live="polite"></p>
       </section>
 
       <!-- ekran szczegolow anime -->
@@ -47,7 +50,7 @@
         <article class="detail">
           <img id="detail-cover" class="cover" alt="" hidden />
           <div class="detail-body">
-            <h2 id="detail-title">…</h2>
+            <h2 id="detail-title" tabindex="-1" aria-live="polite">…</h2>
             <p id="detail-facts" class="facts"></p>
             <p id="detail-description" class="description"></p>
           </div>
@@ -94,8 +97,17 @@
             Wyłączone: po odcinku pojawia się pytanie, tak jak w menu ani-cli.
           </p>
 
+          <label class="checkline">
+            <input id="set-skip" type="checkbox" />
+            <span>Pomijaj czołówkę i zakończenie</span>
+          </label>
+          <p class="hint">
+            Czasy z AniSkip, tylko dla anime z katalogu. Gdy brak danych, odcinek
+            leci normalnie.
+          </p>
+
           <button id="settings-save" class="primary" type="button">Zapisz</button>
-          <p id="settings-hint" class="hint"></p>
+          <p id="settings-hint" class="hint" aria-live="polite"></p>
         </div>
 
         <div class="card">
@@ -142,13 +154,16 @@
     <footer id="nowbar" class="nowbar" hidden>
       <div class="nowbar-info">
         <span id="state-dot" class="dot" aria-hidden="true"></span>
-        <div class="nowbar-text">
+        <div class="nowbar-text" role="status" aria-live="polite">
           <strong id="now-title">—</strong>
           <small id="now-meta"></small>
         </div>
       </div>
+      <p id="adb-hint" class="adb-hint" hidden>
+        Pauza i stan niedostępne — włącz Wireless debugging na urządzeniu.
+      </p>
       <div class="nowbar-actions">
-        <button id="pause" type="button" hidden>Pauza</button>
+        <button id="pause" type="button" aria-pressed="false" hidden>Pauza</button>
         <button id="stop" type="button">Stop</button>
       </div>
     </footer>
